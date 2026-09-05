@@ -9,7 +9,7 @@ const SECURITY_HEADERS = {
 const TARGET_BRANDS = [
   {
     name: 'Microsoft',
-    legit: [
+    legitSuffixes: [
       'microsoft.com',
       'microsoftonline.com',
       'live.com',
@@ -25,56 +25,40 @@ const TARGET_BRANDS = [
       'skype.com',
       'trafficmanager.net'
     ],
-    regex: /(micros[o0]ft|0ffice|m365|ms-auth|login-ms)/i
+    // Match only when brand names appear as distinct labels or subdomains
+    regex: /(?:^|\.)(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)(?:\.|$)/i
   },
   {
     name: 'Okta',
-    legit: ['okta.com', 'oktapreview.com'],
-    regex: /(okta[-_.]auth|okta[-_.]login|0kta)/i
+    legitSuffixes: ['okta.com', 'oktapreview.com'],
+    regex: /(?:^|\.)(?:login[-.]?)?(?:okta[-_.]auth|okta[-_.]login|0kta)(?:\.|$)/i
   },
   {
     name: 'Google',
-    legit: ['google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com', 'googleusercontent.com'],
-    regex: /(g00gle|accounts-google|gmail-auth)/i
+    legitSuffixes: ['google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com', 'googleusercontent.com'],
+    regex: /(?:^|\.)(?:g00gle|accounts[-_.]google|gmail[-_.]auth)(?:\.|$)/i
   }
 ];
 
-const KNOWN_BENIGN_DOMAINS = [
-  'cloudflare.com',
-  'digicert.com',
-  'globalsign.com',
-  'jsdelivr.net',
-  'w3.org',
-  'xmlsoap.org',
-  'amazonaws.com',
-  'vimeo.com',
-  'vimeocdn.com',
-  'stripe.com',
-  'stripecdn.com',
-  'facebook.com',
-  'tiktok.com',
-  'linkedin.com',
-  'reddit.com',
-  'twitter.com',
-  'fontawesome.com'
+const GLOBAL_BENIGN_ROOTS = [
+  'cloudflare.com', 'digicert.com', 'globalsign.com', 'jsdelivr.net',
+  'w3.org', 'xmlsoap.org', 'amazonaws.com', 'vimeo.com', 'vimeocdn.com',
+  'stripe.com', 'stripecdn.com', 'facebook.com', 'tiktok.com', 'linkedin.com',
+  'reddit.com', 'twitter.com', 'fontawesome.com', 'google-analytics.com',
+  'googletagmanager.com', 'akamai.net', 'akamaized.net', 'edgekey.net',
+  'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com'
 ];
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // ==========================================
-    // API: Demo Endpoint
-    // ==========================================
     if (url.pathname === '/api/demo' && request.method === 'GET') {
       return new Response(JSON.stringify(getDemoReport()), {
         headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
       });
     }
 
-    // ==========================================
-    // API: Analyze PCAP Endpoint
-    // ==========================================
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const formData = await request.formData();
@@ -109,9 +93,6 @@ export default {
       }
     }
 
-    // ==========================================
-    // Static Assets Fallback
-    // ==========================================
     const assetResponse = await env.ASSETS.fetch(request);
     const modifiedHeaders = new Headers(assetResponse.headers);
     for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
@@ -126,45 +107,65 @@ export default {
   }
 };
 
-// ==========================================
-// Threat Analysis & API Lookups Engine
-// ==========================================
 async function parseAndAnalyzePCAP(bytes, filename, env) {
   let packetCount = 0;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  // Header detection & packet counting
+  // 1. Strict Binary Header Validation & Traversal
   if (bytes.length >= 4) {
-    const magic = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+    const magic = view.getUint32(0, false);
+
+    // Standard PCAP (Big Endian or Little Endian)
     if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
+      const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
       let offset = 24;
       while (offset + 16 <= bytes.length) {
-        const inclLen = bytes[offset + 8] | (bytes[offset + 9] << 8) | (bytes[offset + 10] << 16) | (bytes[offset + 11] << 24);
+        const inclLen = view.getUint32(offset + 8, littleEndian);
         packetCount++;
-        offset += 16 + (inclLen > 0 && inclLen < 65535 ? inclLen : 0);
-        if (inclLen === 0) break;
+        if (inclLen === 0 || inclLen > 65535) break;
+        offset += 16 + inclLen;
       }
-    } else if (bytes[0] === 0x0a && bytes[1] === 0x0d && bytes[2] === 0x0d && bytes[3] === 0x0a) {
+    }
+    // PCAPNG Format (Section Header Block 0x0A0D0D0A)
+    else if (magic === 0x0a0d0d0a) {
       let offset = 0;
-      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       while (offset + 12 <= bytes.length) {
         const blockType = view.getUint32(offset, true);
         const blockLen = view.getUint32(offset + 4, true);
+
+        // Standard 32-bit aligned block length validation
         if (blockLen < 12 || offset + blockLen > bytes.length) break;
-        if (blockType === 0x00000006 || blockType === 0x00000003) packetCount++;
+
+        // Enhanced Packet Block (0x06) or Simple Packet Block (0x03)
+        if (blockType === 0x00000006 || blockType === 0x00000003) {
+          packetCount++;
+        }
         offset += blockLen;
       }
     }
   }
-  if (packetCount === 0) packetCount = Math.max(1, Math.floor(bytes.length / 128));
 
-  // Extract plain-text strings
+  // Fallback estimation if stream headers were truncated
+  if (packetCount === 0) {
+    packetCount = Math.max(1, Math.floor(bytes.length / 128));
+  }
+
+  // 2. Memory-Safe ASCII String Extraction
+  // Decodes strings in 5MB blocks to prevent exceeding Worker 128MB RAM boundary
+  let rawText = '';
+  const chunkSize = 5 * 1024 * 1024;
   const decoder = new TextDecoder('utf-8', { fatal: false });
-  const rawText = decoder.decode(bytes);
+  const totalChunks = Math.min(bytes.length, 25 * 1024 * 1024); // Inspect first 25MB maximum
 
-  // Extract domains
-  const domainRegex = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|cloud|info|xyz|app|online|site|ru|top|live|work|dev)/gi;
+  for (let i = 0; i < totalChunks; i += chunkSize) {
+    rawText += decoder.decode(bytes.subarray(i, Math.min(i + chunkSize, totalChunks)));
+  }
+
+  // 3. Structured Protocol Extraction
+  const domainRegex = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|cloud|info|xyz|app|online|site|ru|top|live|work|dev|biz|buzz|pw|tk|cc)/gi;
   const rawMatches = rawText.match(domainRegex) || [];
   const domainCounts = {};
+
   for (const match of rawMatches) {
     const clean = match.toLowerCase().replace(/^\.+|\.+$/g, '');
     if (clean.length > 3 && !clean.includes('gopacket') && !clean.includes('linux')) {
@@ -172,11 +173,31 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // Extract TLS Sessions
+  // Extract HTTP Methods & Flows
+  const httpFlows = [];
+  const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
+  let httpMatch;
+  while ((httpMatch = httpMethodRegex.exec(rawText)) !== null) {
+    const method = httpMatch[1];
+    const path = httpMatch[2];
+    const isLogin = /login|auth|signin|password|session|oauth|token|credential/i.test(path);
+    httpFlows.push({
+      method,
+      host: Object.keys(domainCounts)[0] || 'unknown',
+      path: path.length > 200 ? path.substring(0, 197) + '...' : path,
+      statusCode: method === 'POST' ? 302 : 200,
+      location: method === 'POST' ? '/redirect' : '',
+      hasSetCookie: method === 'POST',
+      isLogin
+    });
+    if (httpFlows.length >= 25) break;
+  }
+
+  // Extract TLS Server Name Indication (SNI)
   const tlsSessions = [];
   for (const [dom] of Object.entries(domainCounts)) {
     if (rawText.includes(dom)) {
-      const isSuspicious = TARGET_BRANDS.some(b => b.regex.test(dom) && !b.legit.some(l => dom === l || dom.endsWith('.' + l)));
+      const isSuspicious = TARGET_BRANDS.some(b => b.regex.test(dom) && !b.legitSuffixes.some(l => dom === l || dom.endsWith('.' + l)));
       tlsSessions.push({
         sni: dom,
         clientIP: '192.168.1.' + (10 + (tlsSessions.length % 50)),
@@ -190,25 +211,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // Extract HTTP Flows
-  const httpFlows = [];
-  const httpMethodRegex = /(GET|POST|HEAD|OPTIONS)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
-  let httpMatch;
-  while ((httpMatch = httpMethodRegex.exec(rawText)) !== null) {
-    const method = httpMatch[1];
-    const path = httpMatch[2];
-    httpFlows.push({
-      method,
-      host: Object.keys(domainCounts)[0] || 'unknown',
-      path,
-      statusCode: method === 'POST' ? 302 : 200,
-      location: method === 'POST' ? '/redirect' : '',
-      hasSetCookie: method === 'POST',
-      isLogin: /login|auth|signin|password|session/i.test(path)
-    });
-    if (httpFlows.length >= 25) break;
-  }
-
   const findings = [];
   const domains = [];
   const iocMatches = [];
@@ -216,17 +218,17 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   let threatScore = 0;
 
   // -------------------------------------------------------------
-  // 1. BRAND SPOOFING / AITM REVERSE PROXY ANALYSIS
+  // Heuristic 1: Adversary-in-the-Middle (AiTM) Brand Spoofing
   // -------------------------------------------------------------
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
     let isLookalike = false;
 
     for (const brand of TARGET_BRANDS) {
+      const isLegitimate = brand.legitSuffixes.some(suffix => domain === suffix || domain.endsWith('.' + suffix));
       const matchesBrandKeyword = brand.regex.test(domain);
-      const isLegitimateBrand = brand.legit.some(l => domain === l || domain.endsWith('.' + l));
 
-      if (matchesBrandKeyword && !isLegitimateBrand) {
+      if (matchesBrandKeyword && !isLegitimate) {
         brandDetected = brand.name;
         isLookalike = true;
         lookalikeDomains.push(domain);
@@ -236,12 +238,12 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
           title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
           description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
           severity: 'critical',
-          evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legit[0]}` }],
+          evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
           mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
         });
 
         iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
-      } else if (isLegitimateBrand) {
+      } else if (isLegitimate) {
         brandDetected = brand.name;
       }
     }
@@ -262,7 +264,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     threatScore += 50;
     findings.push({
       title: 'Adversary-in-the-Middle (AiTM) Credential Submission Observed',
-      description: 'Captured HTTP POST targeting login endpoints on an impersonated domain.',
+      description: 'Captured an HTTP POST request targeting authentication endpoints hosted on an impersonated domain.',
       severity: 'critical',
       evidence: [{ field: 'Target', value: lookalikeDomains[0], context: 'Reverse proxy capturing credentials' }],
       mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant hardware keys across all accounts.'
@@ -270,30 +272,35 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // 2. CLEARFAKE / CLICKFIX SOCIAL ENGINEERING DETECTION
+  // Heuristic 2: ClearFake / ClickFix Social Engineering Lures
   // -------------------------------------------------------------
   const hasClearFakeCdnCgi = /cdn-cgi\/challenge-platform\/[^\s"']+/i.test(rawText);
   const hasTurnstileScript = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
   const hasClipboardWrite = /clipboard(?:\.writeText|\.write)/i.test(rawText);
-  const originCandidate = Object.keys(domainCounts).find(d => d.includes('dmeltzer') || d.includes('beehiiv')) || 'group.dmeltzer.com';
 
-  if (hasClearFakeCdnCgi || (hasTurnstileScript && hasClipboardWrite) || rawText.includes('challenge-platform')) {
+  // Identify the compromised origin (exclude legitimate CDNs & target brands)
+  const compromisedCandidate = Object.keys(domainCounts).find(d => 
+    !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))) &&
+    !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b))
+  ) || 'External Origin';
+
+  if (hasClearFakeCdnCgi || (hasTurnstileScript && hasClipboardWrite)) {
     threatScore += 80;
     findings.push({
-      title: 'ClearFake / ClickFix Social Engineering Attack (SURICATA Alert)',
-      description: 'Detected network signatures matching fake Cloudflare verification lures used to trick victims into executing clipboard commands.',
+      title: 'ClearFake / ClickFix Social Engineering Attack',
+      description: 'Detected network signatures matching fake Cloudflare verification lures used to deliver malware via clipboard command injection.',
       severity: 'critical',
       evidence: [
-        { field: 'Pattern', value: 'Fake Cloudflare Challenge-Platform Injection', context: 'Suricata Rule: CLEARFAKE / ClickFix' },
-        { field: 'Origin Host', value: originCandidate, context: 'Compromised Lure Origin' }
+        { field: 'Pattern', value: 'Fake Cloudflare Challenge-Platform Injection', context: 'ClickFix Social Engineering' },
+        { field: 'Origin Host', value: compromisedCandidate, context: 'Compromised Lure Origin' }
       ],
-      mitigation: 'Block domain immediately on edge firewalls. Inspect endpoints for clipboard hijacking and suspicious PowerShell executions.'
+      mitigation: 'Block domain immediately on edge firewalls. Inspect endpoints for clipboard hijacking and PowerShell process creation.'
     });
-    iocMatches.push({ severity: 'critical', value: `${originCandidate} (ClearFake Lure)`, type: 'Social Engineering Exploit' });
+    iocMatches.push({ severity: 'critical', value: `${compromisedCandidate} (ClearFake Lure)`, type: 'Social Engineering Exploit' });
   }
 
   // -------------------------------------------------------------
-  // 3. POWERSHELL DOWNLOAD CRADLE DETECTION
+  // Heuristic 3: PowerShell Staging & Execution Cradles
   // -------------------------------------------------------------
   const isPowerShellFlow = /WindowsPowerShell/i.test(rawText) || /(?:Net\.WebClient|DownloadString|invoke-expression|iex\s*\(|-[eE](?:nc(?:odedcommand)?)?)/i.test(rawText);
   if (isPowerShellFlow) {
@@ -309,14 +316,22 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // 4. THIRD-PARTY THREAT INTELLIGENCE (Tria.ge, Hybrid Analysis, URLhaus)
+  // Heuristic 4: Contextual Candidate Selection for API Lookups
   // -------------------------------------------------------------
+  // Filters candidates to maximize hit-rate on suspicious, unclassified domains
   const candidateDomains = Object.keys(domainCounts)
-    .filter(d => !TARGET_BRANDS.some(b => b.legit.some(l => d === l || d.endsWith('.' + l))))
-    .filter(d => !KNOWN_BENIGN_DOMAINS.some(b => d === b || d.endsWith('.' + b)))
-    .slice(0, 4);
+    .filter(d => !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))))
+    .filter(d => !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b)))
+    // Prioritize domains associated with high query counts or dynamic/low-cost TLDs
+    .sort((a, b) => {
+      const suspiciousTLD = /\.(?:xyz|top|site|ru|online|click|cfd|work|buzz)$/i;
+      const aScore = (suspiciousTLD.test(a) ? 10 : 0) + (domainCounts[a] || 0);
+      const bScore = (suspiciousTLD.test(b) ? 10 : 0) + (domainCounts[b] || 0);
+      return bScore - aScore;
+    })
+    .slice(0, 3); // Query top 3 priority candidates to guarantee execution well under 50ms CPU limit
 
-  // 4a. Query Recorded Future Tria.ge Sandbox API
+  // 4a. Recorded Future Tria.ge Sandbox API
   if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
     const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
     const triageResults = await Promise.all(triagePromises);
@@ -344,7 +359,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // 4b. Query CrowdStrike Falcon / Hybrid Analysis API v2
+  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2
   if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
     const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
     const haResults = await Promise.all(haPromises);
@@ -371,7 +386,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // 4c. Query Abuse.ch URLhaus
+  // 4c. Abuse.ch URLhaus API
   if (env && env.ABUSE_CH_API_KEY && candidateDomains.length > 0) {
     const urlhausPromises = candidateDomains.map(d => queryUrlhaus(d, env.ABUSE_CH_API_KEY));
     const urlhausResults = await Promise.all(urlhausPromises);
@@ -458,7 +473,7 @@ async function queryTriage(domain, apiKey) {
       if (overviewResp.ok) {
         const overview = await overviewResp.json();
         const score = overview.analysis ? overview.analysis.score : 10;
-        const family = overview.analysis && overview.analysis.family ? overview.analysis.family : 'ClearFake/Lure';
+        const family = overview.analysis && overview.analysis.family ? overview.analysis.family : 'Reported Threat';
         const tags = overview.analysis && overview.analysis.tags ? overview.analysis.tags : ['malicious'];
 
         return {
@@ -474,7 +489,7 @@ async function queryTriage(domain, apiKey) {
         isMalicious: true,
         score: 10,
         sampleId: sample.id,
-        family: 'ClearFake/ClickFix',
+        family: 'Reported Threat',
         tags: ['public-detonation']
       };
     }
