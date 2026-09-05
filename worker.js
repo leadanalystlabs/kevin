@@ -25,7 +25,6 @@ const TARGET_BRANDS = [
       'skype.com',
       'trafficmanager.net'
     ],
-    // Match only when brand names appear as distinct labels or subdomains
     regex: /(?:^|\.)(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)(?:\.|$)/i
   },
   {
@@ -46,8 +45,18 @@ const GLOBAL_BENIGN_ROOTS = [
   'stripe.com', 'stripecdn.com', 'facebook.com', 'tiktok.com', 'linkedin.com',
   'reddit.com', 'twitter.com', 'fontawesome.com', 'google-analytics.com',
   'googletagmanager.com', 'akamai.net', 'akamaized.net', 'edgekey.net',
-  'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com'
+  'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
+  'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com'
 ];
+
+function safeUpperString(val, fallback = 'MALWARE') {
+  if (typeof val === 'string' && val.trim().length > 0) return val.trim().toUpperCase();
+  if (Array.isArray(val) && val.length > 0) {
+    const first = val[0];
+    if (typeof first === 'string' && first.trim().length > 0) return first.trim().toUpperCase();
+  }
+  return fallback;
+}
 
 export default {
   async fetch(request, env) {
@@ -111,11 +120,10 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   let packetCount = 0;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  // 1. Strict Binary Header Validation & Traversal
+  // 1. Binary Header Validation & Traversal
   if (bytes.length >= 4) {
     const magic = view.getUint32(0, false);
 
-    // Standard PCAP (Big Endian or Little Endian)
     if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
       const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
       let offset = 24;
@@ -125,18 +133,13 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         if (inclLen === 0 || inclLen > 65535) break;
         offset += 16 + inclLen;
       }
-    }
-    // PCAPNG Format (Section Header Block 0x0A0D0D0A)
-    else if (magic === 0x0a0d0d0a) {
+    } else if (magic === 0x0a0d0d0a) {
       let offset = 0;
       while (offset + 12 <= bytes.length) {
         const blockType = view.getUint32(offset, true);
         const blockLen = view.getUint32(offset + 4, true);
 
-        // Standard 32-bit aligned block length validation
         if (blockLen < 12 || offset + blockLen > bytes.length) break;
-
-        // Enhanced Packet Block (0x06) or Simple Packet Block (0x03)
         if (blockType === 0x00000006 || blockType === 0x00000003) {
           packetCount++;
         }
@@ -145,17 +148,15 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // Fallback estimation if stream headers were truncated
   if (packetCount === 0) {
     packetCount = Math.max(1, Math.floor(bytes.length / 128));
   }
 
   // 2. Memory-Safe ASCII String Extraction
-  // Decodes strings in 5MB blocks to prevent exceeding Worker 128MB RAM boundary
   let rawText = '';
   const chunkSize = 5 * 1024 * 1024;
   const decoder = new TextDecoder('utf-8', { fatal: false });
-  const totalChunks = Math.min(bytes.length, 25 * 1024 * 1024); // Inspect first 25MB maximum
+  const totalChunks = Math.min(bytes.length, 25 * 1024 * 1024);
 
   for (let i = 0; i < totalChunks; i += chunkSize) {
     rawText += decoder.decode(bytes.subarray(i, Math.min(i + chunkSize, totalChunks)));
@@ -173,7 +174,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // Extract HTTP Methods & Flows
+  // Extract HTTP Methods, Host Headers, & Request Paths
   const httpFlows = [];
   const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
@@ -181,16 +182,21 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const method = httpMatch[1];
     const path = httpMatch[2];
     const isLogin = /login|auth|signin|password|session|oauth|token|credential/i.test(path);
+
+    // Extract following Host header if present in close proximity
+    const hostMatch = rawText.substring(httpMatch.index, httpMatch.index + 250).match(/Host:\s*([a-zA-Z0-9.-]+)/i);
+    const flowHost = hostMatch ? hostMatch[1] : (Object.keys(domainCounts)[0] || 'unknown');
+
     httpFlows.push({
       method,
-      host: Object.keys(domainCounts)[0] || 'unknown',
-      path: path.length > 200 ? path.substring(0, 197) + '...' : path,
+      host: flowHost,
+      path: path.length > 150 ? path.substring(0, 147) + '...' : path,
       statusCode: method === 'POST' ? 302 : 200,
       location: method === 'POST' ? '/redirect' : '',
       hasSetCookie: method === 'POST',
       isLogin
     });
-    if (httpFlows.length >= 25) break;
+    if (httpFlows.length >= 35) break;
   }
 
   // Extract TLS Server Name Indication (SNI)
@@ -207,7 +213,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         alpn: 'h2',
         isSuspicious
       });
-      if (tlsSessions.length >= 10) break;
+      if (tlsSessions.length >= 15) break;
     }
   }
 
@@ -258,7 +264,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // AiTM Credential Post Check
   const hasCredentialPost = httpFlows.some(f => f.method === 'POST' && f.isLogin);
   if (hasCredentialPost && lookalikeDomains.length > 0) {
     threatScore += 50;
@@ -278,7 +283,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const hasTurnstileScript = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
   const hasClipboardWrite = /clipboard(?:\.writeText|\.write)/i.test(rawText);
 
-  // Identify the compromised origin (exclude legitimate CDNs & target brands)
   const compromisedCandidate = Object.keys(domainCounts).find(d => 
     !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))) &&
     !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b))
@@ -300,7 +304,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 3: PowerShell Staging & Execution Cradles
+  // Heuristic 3: PowerShell Staging & Malware Payloads
   // -------------------------------------------------------------
   const isPowerShellFlow = /WindowsPowerShell/i.test(rawText) || /(?:Net\.WebClient|DownloadString|invoke-expression|iex\s*\(|-[eE](?:nc(?:odedcommand)?)?)/i.test(rawText);
   if (isPowerShellFlow) {
@@ -315,23 +319,36 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     iocMatches.push({ severity: 'critical', value: 'PowerShell Stager', type: 'Malware Delivery' });
   }
 
+  // Detect malicious archive / binary staging over plaintext HTTP
+  const payloadMatch = rawText.match(/GET\s+([^\s]+\.(?:rar|zip|exe|bin|dll|bat|vbs|ps1))\b/i);
+  if (payloadMatch) {
+    threatScore += 85;
+    const stagedFile = payloadMatch[1];
+    findings.push({
+      title: 'Malicious Payload / Archive Download Observed',
+      description: `Detected outbound HTTP GET request retrieving unencrypted payload staging file (${stagedFile}).`,
+      severity: 'critical',
+      evidence: [{ field: 'Payload Path', value: stagedFile, context: 'Malware Dropper / Payload Delivery' }],
+      mitigation: 'Block source domain and hash on perimeter security gateways. Terminate associated network sessions.'
+    });
+    iocMatches.push({ severity: 'critical', value: stagedFile, type: 'Payload Download' });
+  }
+
   // -------------------------------------------------------------
-  // Heuristic 4: Contextual Candidate Selection for API Lookups
+  // Heuristic 4: Contextual Threat Intelligence Lookups
   // -------------------------------------------------------------
-  // Filters candidates to maximize hit-rate on suspicious, unclassified domains
   const candidateDomains = Object.keys(domainCounts)
     .filter(d => !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))))
     .filter(d => !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b)))
-    // Prioritize domains associated with high query counts or dynamic/low-cost TLDs
     .sort((a, b) => {
-      const suspiciousTLD = /\.(?:xyz|top|site|ru|online|click|cfd|work|buzz)$/i;
-      const aScore = (suspiciousTLD.test(a) ? 10 : 0) + (domainCounts[a] || 0);
-      const bScore = (suspiciousTLD.test(b) ? 10 : 0) + (domainCounts[b] || 0);
+      const suspiciousPattern = /(?:ddos|bot|c2|payload|loader|\.top$|\.xyz$|\.ru$|\.site$)/i;
+      const aScore = (suspiciousPattern.test(a) ? 20 : 0) + (domainCounts[a] || 0);
+      const bScore = (suspiciousPattern.test(b) ? 20 : 0) + (domainCounts[b] || 0);
       return bScore - aScore;
     })
-    .slice(0, 3); // Query top 3 priority candidates to guarantee execution well under 50ms CPU limit
+    .slice(0, 3);
 
-  // 4a. Recorded Future Tria.ge Sandbox API
+  // 4a. Recorded Future Tria.ge Sandbox API (Type-Hardened)
   if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
     const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
     const triageResults = await Promise.all(triagePromises);
@@ -339,15 +356,15 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     triageResults.forEach((res, idx) => {
       if (res && res.isMalicious) {
         const flaggedDomain = candidateDomains[idx];
-        const malwareLabel = res.family ? res.family.toUpperCase() : (res.tags[0] || 'MALWARE').toUpperCase();
+        const malwareLabel = safeUpperString(res.family, safeUpperString(res.tags, 'THREAT_ACTOR'));
         threatScore += 80;
 
         findings.push({
           title: `Sandbox Correlation: ${malwareLabel} Detected (${flaggedDomain})`,
-          description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10. Tags: ${res.tags.join(', ')}.`,
+          description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10.`,
           severity: 'critical',
           evidence: [
-            { field: 'Sandbox Sample', value: res.sampleId, context: 'Tria.ge Public Detonation' },
+            { field: 'Sandbox Sample', value: String(res.sampleId), context: 'Tria.ge Public Detonation' },
             { field: 'Threat Family', value: malwareLabel, context: 'Threat Actor Infrastructure' },
             { field: 'Report Link', value: `https://tria.ge/${res.sampleId}`, context: 'Investigation Pivot' }
           ],
@@ -359,7 +376,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2
+  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2 (Type-Hardened)
   if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
     const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
     const haResults = await Promise.all(haPromises);
@@ -367,21 +384,22 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     haResults.forEach((res, idx) => {
       if (res && res.isMalicious) {
         const flaggedDomain = candidateDomains[idx];
+        const vxLabel = safeUpperString(res.vxFamily, 'MALWARE');
         threatScore += 75;
 
         findings.push({
-          title: `Falcon Sandbox Alert: ${res.vxFamily} (${flaggedDomain})`,
-          description: `CrowdStrike Hybrid Analysis classified this domain as ${res.verdict} with a threat score of ${res.score}/100 in environment '${res.environment}'.`,
+          title: `Falcon Sandbox Alert: ${vxLabel} (${flaggedDomain})`,
+          description: `CrowdStrike Hybrid Analysis classified this domain as ${res.verdict} with a threat score of ${res.score}/100.`,
           severity: 'critical',
           evidence: [
-            { field: 'Verdict', value: res.verdict, context: 'CrowdStrike Falcon Behavioral Engine' },
-            { field: 'Malware Family', value: res.vxFamily, context: 'Threat Actor Infrastructure' },
-            { field: 'Job ID', value: res.jobId, context: 'Falcon Sandbox Job ID' }
+            { field: 'Verdict', value: String(res.verdict), context: 'CrowdStrike Falcon Engine' },
+            { field: 'Malware Family', value: vxLabel, context: 'Threat Actor Infrastructure' },
+            { field: 'Job ID', value: String(res.jobId), context: 'Falcon Sandbox Job ID' }
           ],
           mitigation: 'Block domain across perimeter EDR/firewalls. Quarantine internal hosts communicating with this destination.'
         });
 
-        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${res.vxFamily})`, type: 'Hybrid Analysis C2 Threat' });
+        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${vxLabel})`, type: 'Hybrid Analysis C2 Threat' });
       }
     });
   }
@@ -446,9 +464,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   };
 }
 
-// -------------------------------------------------------------
-// Helper: Query Recorded Future Tria.ge Sandbox API
-// -------------------------------------------------------------
 async function queryTriage(domain, apiKey) {
   try {
     const query = encodeURIComponent(`domain:${domain}`);
@@ -472,9 +487,9 @@ async function queryTriage(domain, apiKey) {
 
       if (overviewResp.ok) {
         const overview = await overviewResp.json();
-        const score = overview.analysis ? overview.analysis.score : 10;
-        const family = overview.analysis && overview.analysis.family ? overview.analysis.family : 'Reported Threat';
-        const tags = overview.analysis && overview.analysis.tags ? overview.analysis.tags : ['malicious'];
+        const score = overview.analysis ? (overview.analysis.score || 10) : 10;
+        const family = overview.analysis ? (overview.analysis.family || null) : null;
+        const tags = overview.analysis ? (overview.analysis.tags || []) : [];
 
         return {
           isMalicious: score >= 5,
@@ -499,9 +514,6 @@ async function queryTriage(domain, apiKey) {
   }
 }
 
-// -------------------------------------------------------------
-// Helper: Query CrowdStrike Falcon / Hybrid Analysis API v2
-// -------------------------------------------------------------
 async function queryHybridAnalysis(domain, apiKey) {
   try {
     const formData = new URLSearchParams();
@@ -528,10 +540,9 @@ async function queryHybridAnalysis(domain, apiKey) {
         return {
           isMalicious: true,
           score: topMatch.threat_score || 100,
-          verdict: (topMatch.verdict || 'MALICIOUS').toUpperCase(),
-          vxFamily: topMatch.vx_family || 'Threat Indicator',
-          jobId: topMatch.job_id || topMatch.environment_id || 'N/A',
-          environment: topMatch.environment_description || 'Sandbox VM'
+          verdict: safeUpperString(topMatch.verdict, 'MALICIOUS'),
+          vxFamily: safeUpperString(topMatch.vx_family, 'Threat Indicator'),
+          jobId: topMatch.job_id || topMatch.environment_id || 'N/A'
         };
       }
     }
@@ -541,9 +552,6 @@ async function queryHybridAnalysis(domain, apiKey) {
   }
 }
 
-// -------------------------------------------------------------
-// Helper: Query Abuse.ch URLhaus API
-// -------------------------------------------------------------
 async function queryUrlhaus(domain, apiKey) {
   try {
     const formData = new URLSearchParams();
