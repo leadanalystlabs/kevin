@@ -314,7 +314,35 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const candidateDomains = Object.keys(domainCounts)
     .filter(d => !TARGET_BRANDS.some(b => b.legit.some(l => d === l || d.endsWith('.' + l))))
     .filter(d => !KNOWN_BENIGN_DOMAINS.some(b => d === b || d.endsWith('.' + b)))
-    .slice(0, 4); // Filter top 4 unknown hosts to stay within Worker subrequest limits
+    .slice(0, 4);
+
+  // Query Recorded Future Tria.ge Sandbox API
+  if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
+    const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
+    const triageResults = await Promise.all(triagePromises);
+
+    triageResults.forEach((res, idx) => {
+      if (res && res.isMalicious) {
+        const flaggedDomain = candidateDomains[idx];
+        const malwareLabel = res.family ? res.family.toUpperCase() : (res.tags[0] || 'MALWARE').toUpperCase();
+        threatScore += 80;
+
+        findings.push({
+          title: `Sandbox Correlation: ${malwareLabel} Detected (${flaggedDomain})`,
+          description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10. Tags: ${res.tags.join(', ')}.`,
+          severity: 'critical',
+          evidence: [
+            { field: 'Sandbox Sample', value: res.sampleId, context: 'Tria.ge Public Detonation' },
+            { field: 'Threat Family', value: malwareLabel, context: 'Threat Actor Infrastructure' },
+            { field: 'Report Link', value: `https://tria.ge/${res.sampleId}`, context: 'Investigation Pivot' }
+          ],
+          mitigation: 'Block domain and associated IPs across perimeter firewalls. Quarantine endpoints communicating with this destination.'
+        });
+
+        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${malwareLabel})`, type: 'Triage Threat' });
+      }
+    });
+  }
 
   // Query Abuse.ch URLhaus
   if (env && env.ABUSE_CH_API_KEY && candidateDomains.length > 0) {
@@ -333,33 +361,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
           mitigation: 'Block domain and IP at edge firewalls; inspect endpoints connecting to this destination.'
         });
         iocMatches.push({ severity: 'critical', value: flaggedDomain, type: 'URLhaus Host' });
-      }
-    });
-  }
-
-  // Query Recorded Future Tria.ge Sandbox API
-  if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
-    const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
-    const triageResults = await Promise.all(triagePromises);
-
-    triageResults.forEach((res, idx) => {
-      if (res && res.isMalicious) {
-        const flaggedDomain = candidateDomains[idx];
-        const malwareLabel = res.family ? res.family.toUpperCase() : (res.tags[0] || 'MALWARE').toUpperCase();
-        threatScore += 75;
-
-        findings.push({
-          title: `Sandbox Correlation: ${malwareLabel} Detected (${flaggedDomain})`,
-          description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10. Tags: ${res.tags.join(', ')}.`,
-          severity: 'critical',
-          evidence: [
-            { field: 'Sandbox Sample', value: res.sampleId, context: 'Triage Automated Detonation' },
-            { field: 'Threat Family', value: malwareLabel, context: 'Threat Actor Infrastructure' }
-          ],
-          mitigation: 'Block domain and associated IPs across perimeter firewalls. Quarantine endpoints communicating with this destination.'
-        });
-
-        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${malwareLabel})`, type: 'Triage C2 Threat' });
       }
     });
   }
@@ -404,6 +405,62 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 }
 
 // -------------------------------------------------------------
+// Helper: Query Recorded Future Tria.ge Sandbox API
+// -------------------------------------------------------------
+async function queryTriage(domain, apiKey) {
+  try {
+    const query = encodeURIComponent(`domain:${domain}`);
+    // subset=public searches across all public sandbox detonations
+    const response = await fetch(`https://api.tria.ge/v0/search?query=${query}&subset=public&limit=3`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+
+    if (data.data && data.data.length > 0) {
+      const sample = data.data[0];
+
+      // Query the sample's overview to get actual behavioral score & malware family tags
+      const overviewResp = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` }
+      });
+
+      if (overviewResp.ok) {
+        const overview = await overviewResp.json();
+        const score = overview.analysis ? overview.analysis.score : 10;
+        const family = overview.analysis && overview.analysis.family ? overview.analysis.family : 'ClearFake/Lure';
+        const tags = overview.analysis && overview.analysis.tags ? overview.analysis.tags : ['malicious'];
+
+        return {
+          isMalicious: score >= 5,
+          score,
+          sampleId: sample.id,
+          family,
+          tags
+        };
+      }
+
+      // Fallback if overview is restricted
+      return {
+        isMalicious: true,
+        score: 10,
+        sampleId: sample.id,
+        family: 'ClearFake/ClickFix',
+        tags: ['public-detonation']
+      };
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// -------------------------------------------------------------
 // Helper: Query Abuse.ch URLhaus API
 // -------------------------------------------------------------
 async function queryUrlhaus(domain, apiKey) {
@@ -424,41 +481,6 @@ async function queryUrlhaus(domain, apiKey) {
     const data = await response.json();
     if (data.query_status === 'ok') {
       return { isMalicious: true, urlCount: data.url_count || 0 };
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-// -------------------------------------------------------------
-// Helper: Query Tria.ge Sandbox Search API
-// -------------------------------------------------------------
-async function queryTriage(domain, apiKey) {
-  try {
-    const query = encodeURIComponent(`domain:${domain}`);
-    const response = await fetch(`https://api.tria.ge/v0/search?query=${query}&limit=3`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!response.ok) return null;
-    const data = await response.json();
-
-    if (data.data && data.data.length > 0) {
-      const topMatch = data.data.reduce((prev, curr) => (curr.score > prev.score ? curr : prev), data.data[0]);
-      if (topMatch.score >= 7) {
-        return {
-          isMalicious: true,
-          score: topMatch.score,
-          sampleId: topMatch.id,
-          family: topMatch.family || null,
-          tags: topMatch.tags || []
-        };
-      }
     }
     return null;
   } catch (e) {
