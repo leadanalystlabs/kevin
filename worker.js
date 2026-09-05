@@ -157,7 +157,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
   if (packetCount === 0) packetCount = Math.max(1, Math.floor(bytes.length / 128));
 
-  // Extract strings
+  // Extract plain-text strings
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const rawText = decoder.decode(bytes);
 
@@ -309,14 +309,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // 4. THIRD-PARTY THREAT INTELLIGENCE (Tria.ge & URLhaus)
+  // 4. THIRD-PARTY THREAT INTELLIGENCE (Tria.ge, Hybrid Analysis, URLhaus)
   // -------------------------------------------------------------
   const candidateDomains = Object.keys(domainCounts)
     .filter(d => !TARGET_BRANDS.some(b => b.legit.some(l => d === l || d.endsWith('.' + l))))
     .filter(d => !KNOWN_BENIGN_DOMAINS.some(b => d === b || d.endsWith('.' + b)))
     .slice(0, 4);
 
-  // Query Recorded Future Tria.ge Sandbox API
+  // 4a. Query Recorded Future Tria.ge Sandbox API
   if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
     const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
     const triageResults = await Promise.all(triagePromises);
@@ -344,7 +344,34 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // Query Abuse.ch URLhaus
+  // 4b. Query CrowdStrike Falcon / Hybrid Analysis API v2
+  if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
+    const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
+    const haResults = await Promise.all(haPromises);
+
+    haResults.forEach((res, idx) => {
+      if (res && res.isMalicious) {
+        const flaggedDomain = candidateDomains[idx];
+        threatScore += 75;
+
+        findings.push({
+          title: `Falcon Sandbox Alert: ${res.vxFamily} (${flaggedDomain})`,
+          description: `CrowdStrike Hybrid Analysis classified this domain as ${res.verdict} with a threat score of ${res.score}/100 in environment '${res.environment}'.`,
+          severity: 'critical',
+          evidence: [
+            { field: 'Verdict', value: res.verdict, context: 'CrowdStrike Falcon Behavioral Engine' },
+            { field: 'Malware Family', value: res.vxFamily, context: 'Threat Actor Infrastructure' },
+            { field: 'Job ID', value: res.jobId, context: 'Falcon Sandbox Job ID' }
+          ],
+          mitigation: 'Block domain across perimeter EDR/firewalls. Quarantine internal hosts communicating with this destination.'
+        });
+
+        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${res.vxFamily})`, type: 'Hybrid Analysis C2 Threat' });
+      }
+    });
+  }
+
+  // 4c. Query Abuse.ch URLhaus
   if (env && env.ABUSE_CH_API_KEY && candidateDomains.length > 0) {
     const urlhausPromises = candidateDomains.map(d => queryUrlhaus(d, env.ABUSE_CH_API_KEY));
     const urlhausResults = await Promise.all(urlhausPromises);
@@ -410,7 +437,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 async function queryTriage(domain, apiKey) {
   try {
     const query = encodeURIComponent(`domain:${domain}`);
-    // subset=public searches across all public sandbox detonations
     const response = await fetch(`https://api.tria.ge/v0/search?query=${query}&subset=public&limit=3`, {
       method: 'GET',
       headers: {
@@ -425,7 +451,6 @@ async function queryTriage(domain, apiKey) {
     if (data.data && data.data.length > 0) {
       const sample = data.data[0];
 
-      // Query the sample's overview to get actual behavioral score & malware family tags
       const overviewResp = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
         headers: { 'Authorization': `Bearer ${apiKey}` }
       });
@@ -445,7 +470,6 @@ async function queryTriage(domain, apiKey) {
         };
       }
 
-      // Fallback if overview is restricted
       return {
         isMalicious: true,
         score: 10,
@@ -453,6 +477,48 @@ async function queryTriage(domain, apiKey) {
         family: 'ClearFake/ClickFix',
         tags: ['public-detonation']
       };
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// -------------------------------------------------------------
+// Helper: Query CrowdStrike Falcon / Hybrid Analysis API v2
+// -------------------------------------------------------------
+async function queryHybridAnalysis(domain, apiKey) {
+  try {
+    const formData = new URLSearchParams();
+    formData.append('domain', domain);
+
+    const response = await fetch('https://www.hybrid-analysis.com/api/v2/search/terms', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'user-agent': 'Falcon Sandbox',
+        'accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: formData.toString()
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+
+    if (data.result && data.result.length > 0) {
+      const topMatch = data.result.reduce((prev, curr) => ((curr.threat_score || 0) > (prev.threat_score || 0) ? curr : prev), data.result[0]);
+
+      if (topMatch.verdict === 'malicious' || topMatch.verdict === 'suspicious' || (topMatch.threat_score || 0) >= 60) {
+        return {
+          isMalicious: true,
+          score: topMatch.threat_score || 100,
+          verdict: (topMatch.verdict || 'MALICIOUS').toUpperCase(),
+          vxFamily: topMatch.vx_family || 'Threat Indicator',
+          jobId: topMatch.job_id || topMatch.environment_id || 'N/A',
+          environment: topMatch.environment_description || 'Sandbox VM'
+        };
+      }
     }
     return null;
   } catch (e) {
