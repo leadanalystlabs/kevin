@@ -7,9 +7,45 @@ const SECURITY_HEADERS = {
 };
 
 const TARGET_BRANDS = [
-  { name: 'Microsoft', legit: ['microsoft.com', 'microsoftonline.com', 'live.com', 'office.com', 'azure.com', 'windows.net'], regex: /(micros[o0]ft|0ffice|m365|ms-auth|login-ms)/i },
-  { name: 'Okta', legit: ['okta.com', 'oktapreview.com'], regex: /(okta[-_.]auth|okta[-_.]login|0kta)/i },
-  { name: 'Google', legit: ['google.com', 'accounts.google.com'], regex: /(g00gle|accounts-google|gmail-auth)/i }
+  {
+    name: 'Microsoft',
+    legit: [
+      'microsoft.com',
+      'microsoftonline.com',
+      'live.com',
+      'office.com',
+      'azure.com',
+      'windows.net',
+      'windows.com',
+      'microsoftapp.net',
+      'msftstatic.com',
+      'msn.com',
+      'azureedge.net',
+      'bing.com',
+      'skype.com',
+      'trafficmanager.net'
+    ],
+    regex: /(micros[o0]ft|0ffice|m365|ms-auth|login-ms)/i
+  },
+  {
+    name: 'Okta',
+    legit: ['okta.com', 'oktapreview.com'],
+    regex: /(okta[-_.]auth|okta[-_.]login|0kta)/i
+  },
+  {
+    name: 'Google',
+    legit: ['google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com', 'googleusercontent.com'],
+    regex: /(g00gle|accounts-google|gmail-auth)/i
+  }
+];
+
+const CLICKFIX_PATTERNS = [
+  { name: 'PowerShell User-Agent', regex: /User-Agent:\s*WindowsPowerShell\/[^\r\n]+/i, severity: 'critical' },
+  { name: 'PowerShell WebClient Cradle', regex: /(?:Net\.WebClient|DownloadString|DownloadFile)\s*\(/i, severity: 'critical' },
+  { name: 'PowerShell Invoke-Expression (IEX)', regex: /\b(?:iex|invoke-expression)\s*[\(\$]/i, severity: 'critical' },
+  { name: 'Encoded / Hidden Execution', regex: /powershell(?:\.exe)?\s+.*(?:-[eE](?:nc(?:odedcommand)?)?|-[wW]\s+hidden)\s+/i, severity: 'critical' },
+  { name: 'Windows Script Utility Abuse', regex: /\b(?:mshta|certutil\s+-(?:urlcache|f)|bitsadmin\s+\/transfer)\b/i, severity: 'high' },
+  { name: 'Clipboard Command Staging (ClickFix)', regex: /(?:navigator\.clipboard\.writeText|powershell\s+-WindowStyle\s+Hidden)/i, severity: 'critical' }
 ];
 
 export default {
@@ -141,17 +177,14 @@ export default {
 };
 
 // ==========================================
-// Native Binary Extraction & Threat Engine
+// Parsing & Threat Detection Engine
 // ==========================================
 function parseAndAnalyzePCAP(bytes, filename) {
   let packetCount = 0;
-  let tcpFlows = 0;
-  let udpFlows = 0;
 
   // Header detection & packet counting
   if (bytes.length >= 4) {
     const magic = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-    // PCAP standard (0xa1b2c3d4 or swapped)
     if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
       let offset = 24;
       while (offset + 16 <= bytes.length) {
@@ -161,7 +194,6 @@ function parseAndAnalyzePCAP(bytes, filename) {
         if (inclLen === 0) break;
       }
     } else if (bytes[0] === 0x0a && bytes[1] === 0x0d && bytes[2] === 0x0d && bytes[3] === 0x0a) {
-      // PCAPNG block format
       let offset = 0;
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       while (offset + 12 <= bytes.length) {
@@ -174,16 +206,15 @@ function parseAndAnalyzePCAP(bytes, filename) {
     }
   }
 
-  // Fallback if binary block headers were fragmented
   if (packetCount === 0) {
     packetCount = Math.max(1, Math.floor(bytes.length / 128));
   }
 
-  // Extract plain-text strings for protocol inspection
+  // Extract strings
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const rawText = decoder.decode(bytes);
 
-  // Extract hostnames & domains
+  // Extract Hostnames & Domains
   const domainRegex = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|cloud|info|xyz|app|online|site|ru|top|live|work|dev)/gi;
   const rawMatches = rawText.match(domainRegex) || [];
   const domainCounts = {};
@@ -195,12 +226,11 @@ function parseAndAnalyzePCAP(bytes, filename) {
     }
   }
 
-  // Extract TLS SNI headers
+  // TLS SNIs
   const tlsSessions = [];
-  const sniRegex = /([a-z0-9.-]+\.(?:com|net|org|io|cloud|app|online|site))/gi;
   for (const [dom] of Object.entries(domainCounts)) {
     if (rawText.includes(dom)) {
-      const isSuspicious = TARGET_BRANDS.some(b => b.regex.test(dom) && !b.legit.some(l => dom.endsWith(l)));
+      const isSuspicious = TARGET_BRANDS.some(b => b.regex.test(dom) && !b.legit.some(l => dom === l || dom.endsWith('.' + l)));
       tlsSessions.push({
         sni: dom,
         clientIP: '192.168.1.' + (10 + (tlsSessions.length % 50)),
@@ -214,7 +244,7 @@ function parseAndAnalyzePCAP(bytes, filename) {
     }
   }
 
-  // Extract HTTP Methods & Flows
+  // HTTP Flows
   const httpFlows = [];
   const httpMethodRegex = /(GET|POST|PUT|HEAD)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
@@ -233,13 +263,14 @@ function parseAndAnalyzePCAP(bytes, filename) {
     if (httpFlows.length >= 10) break;
   }
 
-  // Run Threat Analysis & Score Calculation
+  // Threat Evaluation
   const findings = [];
   const domains = [];
   const iocMatches = [];
   const lookalikeDomains = [];
   let threatScore = 0;
 
+  // 1. AiTM / Brand Phishing Analysis
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
     let isLookalike = false;
@@ -256,7 +287,7 @@ function parseAndAnalyzePCAP(bytes, filename) {
 
         findings.push({
           title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
-          description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} authentication infrastructure.`,
+          description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
           severity: 'critical',
           evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legit[0]}` }],
           mitigation: 'Block domain on edge DNS and revoke any sessions authenticated through this proxy.'
@@ -278,7 +309,7 @@ function parseAndAnalyzePCAP(bytes, filename) {
     });
   }
 
-  // Check for HTTP Credential submission to lookalikes
+  // 2. AiTM Credential Interception
   const hasCredentialPost = httpFlows.some(f => f.method === 'POST' && f.isLogin);
   if (hasCredentialPost && lookalikeDomains.length > 0) {
     threatScore += 50;
@@ -287,8 +318,28 @@ function parseAndAnalyzePCAP(bytes, filename) {
       description: 'Captured an HTTP POST request targeting login endpoints hosted on an impersonated domain.',
       severity: 'critical',
       evidence: [{ field: 'Target', value: lookalikeDomains[0], context: 'Reverse proxy capturing credentials' }],
-      mitigation: 'Enforce FIDO2/WebAuthn hardware keys to stop adversary-in-the-middle session harvesting.'
+      mitigation: 'Enforce FIDO2/WebAuthn hardware keys to stop session token harvesting.'
     });
+  }
+
+  // 3. ClickFix / PowerShell Execution Checks
+  for (const pattern of CLICKFIX_PATTERNS) {
+    const match = rawText.match(pattern.regex);
+    if (match) {
+      const weight = pattern.severity === 'critical' ? 55 : 35;
+      threatScore += weight;
+
+      findings.push({
+        title: `ClickFix / Malicious Staging Indicator: ${pattern.name}`,
+        description: `Captured network artifacts corresponding to fake verification lures, PowerShell download cradles, or infostealer staging.`,
+        severity: pattern.severity,
+        evidence: [{ field: 'Matched Artifact', value: match[0].substring(0, 120), context: 'Command execution / Staging cradle' }],
+        mitigation: 'Isolate endpoint immediately. Inspect process creation logs (Event ID 4688) for explorer.exe launching powershell.exe.'
+      });
+
+      iocMatches.push({ severity: pattern.severity, value: pattern.name, type: 'ClickFix Staging Indicator' });
+      break;
+    }
   }
 
   threatScore = Math.min(100, threatScore);
@@ -297,9 +348,6 @@ function parseAndAnalyzePCAP(bytes, filename) {
   const criticalCount = findings.filter(f => f.severity === 'critical').length;
   const highCount = findings.filter(f => f.severity === 'high').length;
   const mediumCount = findings.filter(f => f.severity === 'medium').length;
-
-  tcpFlows = Math.max(1, Math.floor(packetCount / 12));
-  udpFlows = Math.max(1, Math.floor(packetCount / 24));
 
   return {
     filename,
@@ -312,8 +360,8 @@ function parseAndAnalyzePCAP(bytes, filename) {
       mediumCount,
       lowCount: 0,
       totalPackets: packetCount,
-      tcpFlows,
-      udpFlows,
+      tcpFlows: Math.max(1, Math.floor(packetCount / 12)),
+      udpFlows: Math.max(1, Math.floor(packetCount / 24)),
       uniqueDomains: domains.length,
       dnsQueriesCount: rawMatches.length
     },
