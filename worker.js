@@ -88,6 +88,18 @@ export default {
           });
         }
 
+        // Enforce the 25 MB boundary cleanly
+        const MAX_BYTES = 25 * 1024 * 1024;
+        if (file.size > MAX_BYTES) {
+          return new Response(JSON.stringify({ 
+            success: false, 
+            error: 'File exceeds the 25MB limit. Please filter or slice the capture in Wireshark before uploading.' 
+          }), {
+            status: 413,
+            headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
+          });
+        }
+
         const arrayBuffer = await file.arrayBuffer();
         const analysis = await parseAndAnalyzePCAP(new Uint8Array(arrayBuffer), file.name, env);
 
@@ -183,7 +195,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const path = httpMatch[2];
     const isLogin = /login|auth|signin|password|session|oauth|token|credential/i.test(path);
 
-    // Extract following Host header if present in close proximity
     const hostMatch = rawText.substring(httpMatch.index, httpMatch.index + 250).match(/Host:\s*([a-zA-Z0-9.-]+)/i);
     const flowHost = hostMatch ? hostMatch[1] : (Object.keys(domainCounts)[0] || 'unknown');
 
@@ -348,7 +359,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     })
     .slice(0, 3);
 
-  // 4a. Recorded Future Tria.ge Sandbox API (Type-Hardened)
+  // 4a. Recorded Future Tria.ge Sandbox API
   if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
     const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
     const triageResults = await Promise.all(triagePromises);
@@ -376,7 +387,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     });
   }
 
-  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2 (Type-Hardened)
+  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2
   if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
     const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
     const haResults = await Promise.all(haPromises);
