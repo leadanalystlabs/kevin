@@ -9,6 +9,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<!-- Cloudflare Turnstile Script -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
 
@@ -50,6 +52,11 @@
         <p class="dropzone-text">Drop PCAP file here or click to browse</p>
         <p class="dropzone-subtext">Supports .pcap and .pcapng — max 25MB</p>
         <input type="file" id="file-input" accept=".pcap,.pcapng" hidden>
+      </div>
+
+      <!-- Turnstile Widget Integration -->
+      <div class="turnstile-container" style="margin: 20px 0; display: flex; justify-content: center;">
+        <div class="cf-turnstile" data-sitekey="0x4AAAAAAErni5XSMmj-3Lyq"></div>
       </div>
 
       <div class="upload-actions">
