@@ -6,43 +6,21 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin'
 };
 
+// -------------------------------------------------------------
+// Core Target Brands (Expanded to primary AiTM & credential targets)
+// -------------------------------------------------------------
 const TARGET_BRANDS = [
   {
     name: 'Microsoft',
     legitSuffixes: [
-      'microsoft.com',
-      'microsoftonline.com',
-      'microsoftonline-p.com',
-      'microsoftonline-p.net',
-      'live.com',
-      'office.com',
-      'office365.com',
-      'office365.us',
-      'outlook.com',
-      'outlook.office.com',
-      'outlook.office365.com',
-      'onmicrosoft.com',
-      'microsoft365.com',
-      'sharepoint.com',
-      'sharepointonline.com',
-      'azure.com',
-      'azure.net',
-      'windows.net',
-      'windows.com',
-      'microsoftapp.net',
-      'msftstatic.com',
-      'msauth.net',
-      'msftauth.net',
-      'msftauthimages.net',
-      'msauthimages.net',
-      'msidentity.com',
-      'msecnd.net',
-      'msn.com',
-      'azureedge.net',
-      'azurefd.net',
-      'bing.com',
-      'skype.com',
-      'yammer.com',
+      'microsoft.com', 'microsoftonline.com', 'microsoftonline-p.com',
+      'microsoftonline-p.net', 'live.com', 'office.com', 'office365.com',
+      'office365.us', 'outlook.com', 'outlook.office.com', 'outlook.office365.com',
+      'onmicrosoft.com', 'microsoft365.com', 'sharepoint.com', 'sharepointonline.com',
+      'azure.com', 'azure.net', 'windows.net', 'windows.com', 'microsoftapp.net',
+      'msftstatic.com', 'msauth.net', 'msftauth.net', 'msftauthimages.net',
+      'msauthimages.net', 'msidentity.com', 'msecnd.net', 'msn.com',
+      'azureedge.net', 'azurefd.net', 'bing.com', 'skype.com', 'yammer.com',
       'trafficmanager.net'
     ],
     regex: /(?:^|\.)(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)(?:\.|$)/i
@@ -55,35 +33,44 @@ const TARGET_BRANDS = [
   {
     name: 'Google',
     legitSuffixes: [
-      'google.com',
-      'accounts.google.com',
-      'gstatic.com',
-      'googleapis.com',
-      'googleusercontent.com',
-      'googlesyndication.com',
-      'googleadservices.com',
-      'googletagmanager.com',
-      'google-analytics.com',
-      'doubleclick.net',
-      'youtube.com',
-      'ytimg.com',
-      'ggpht.com',
-      'gvt1.com',
-      'gvt2.com',
-      'goo.gl',
-      'googlemail.com',
-      'workspace.google.com'
+      'google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com',
+      'googleusercontent.com', 'googlesyndication.com', 'googleadservices.com',
+      'googletagmanager.com', 'google-analytics.com', 'doubleclick.net',
+      'youtube.com', 'ytimg.com', 'ggpht.com', 'gvt1.com', 'gvt2.com',
+      'goo.gl', 'googlemail.com', 'workspace.google.com'
     ],
     regex: /(?:^|\.)(?:g00gle|accounts[-_.]google|gmail[-_.]auth)(?:\.|$)/i
+  },
+  {
+    name: 'DocuSign',
+    legitSuffixes: ['docusign.com', 'docusign.net'],
+    regex: /(?:^|\.)(?:docus[i1l]gn|d0cusign|docu[-_]?sign)(?:\.|$)/i
+  },
+  {
+    name: 'PayPal',
+    legitSuffixes: ['paypal.com', 'paypal-communication.com', 'paypalobjects.com'],
+    regex: /(?:^|\.)(?:paypa[l1]|p4ypal|pay[-_]?pal)(?:\.|$)/i
+  },
+  {
+    name: 'Apple',
+    legitSuffixes: ['apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com', 'cdn-apple.com'],
+    regex: /(?:^|\.)(?:apple[-_]?id|icl0ud|apple[-_]?auth)(?:\.|$)/i
+  },
+  {
+    name: 'Adobe',
+    legitSuffixes: ['adobe.com', 'adobelogin.com', 'adobeioruntime.net'],
+    regex: /(?:^|\.)(?:ad0be|adobe[-_.]login)(?:\.|$)/i
   }
 ];
 
-// Expanded with authoritative CDN, Cloud Edge, and Anycast roots
+// -------------------------------------------------------------
+// Global Benign Roots (CDNs, Cloud Services, Analytics, & Infrastructure)
+// -------------------------------------------------------------
 const GLOBAL_BENIGN_ROOTS = [
   'cloudflare.com', 'cloudflare.net', 'cloudflare-ech.com', 'cloudflareinsights.com',
   'digicert.com', 'globalsign.com', 'jsdelivr.net', 'w3.org', 'xmlsoap.org',
   'amazonaws.com', 'vimeo.com', 'vimeocdn.com', 'stripe.com', 'stripecdn.com',
-  'facebook.com', 'tiktok.com', 'linkedin.com', 'reddit.com', 'twitter.com',
+  'facebook.com', 'tiktok.com', 'linkedin.com', 'reddit.com', 'twitter.com', 'x.com',
   'fontawesome.com', 'google-analytics.com', 'googletagmanager.com',
   'akamai.net', 'akamaiedge.net', 'akadns.net', 'akamaized.net', 'edgekey.net',
   'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
@@ -91,31 +78,29 @@ const GLOBAL_BENIGN_ROOTS = [
 ];
 
 const EXTENDED_BENIGN_ROOTS = [
-  // Apple
-  'apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com',
-  // Identity / MFA vendors
+  // Identity / MFA Providers
   'duosecurity.com', 'pingidentity.com', 'pingone.com', 'auth0.com', 'onelogin.com',
-  // AWS / Cloud / Anycast infra
+  // AWS / Cloud / Anycast Infra
   'cloudfront.net', 'awsstatic.com', 'elasticbeanstalk.com', 's3.amazonaws.com',
   'cloudapp.net', 'digitaloceanspaces.com', 'awswaf.com', 'a2z.com', 'amazon.com',
   'amazon-adsystem.com', 'media-amazon.com', 'ssl-images-amazon.com',
-  // CDNs / static asset hosts
+  // Static Assets & Web CDNs
   'unpkg.com', 'cdnjs.cloudflare.com', 'bootstrapcdn.com', 'cachefly.net',
   'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
-  // Hosting / code repositories
+  // Repositories & Hosting
   'github.io', 'githubusercontent.com', 'github.com', 'netlify.app', 'vercel.app',
   'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com',
-  // Enterprise SaaS & Telemetry
+  // Enterprise Productivity / Collaboration
   'salesforce.com', 'force.com', 'zendesk.com', 'hubspot.com', 'mailchimp.com',
   'sendgrid.net', 'twilio.com', 'zoom.us', 'slack.com', 'atlassian.net',
   'atlassian.com', 'dropboxusercontent.com', 'dropbox.com', 'box.com',
-  'docusign.net', 'docusign.com', 'adobe.com', 'adobelogin.com', 'workday.com',
-  'servicenow.com', 'asana.com', 'notion.so', 'figma.com', 'intercom.io',
+  'workday.com', 'servicenow.com', 'asana.com', 'notion.so', 'figma.com', 'intercom.io',
+  // OS & Application Telemetry
   'msedge.net', 'crashlytics.com', 'app-measurement.com', 'firebaseio.com',
   'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com',
-  // Ad & Attribution Networks
+  // Ad Networks & Attribution
   'adnxs.com', 'rubiconproject.com', 'casalemedia.com', 'pubmatic.com',
-  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net'
+  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net', 'yahoo.com'
 ];
 
 const BENIGN_ROOTS_SET = new Set([...GLOBAL_BENIGN_ROOTS, ...EXTENDED_BENIGN_ROOTS]);
@@ -150,6 +135,9 @@ function findBrandForRoot(domain) {
   return null;
 }
 
+// -------------------------------------------------------------
+// Packet Parsing Helpers
+// -------------------------------------------------------------
 const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
 const LINKTYPE_LINUX_SLL = 113;
@@ -166,9 +154,7 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
 
   if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
     const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
-    if (bytes.length >= 24) {
-      linkType = view.getUint32(20, littleEndian);
-    }
+    if (bytes.length >= 24) linkType = view.getUint32(20, littleEndian);
     let offset = 24;
     while (offset + 16 <= bytes.length && packets.length < maxPackets) {
       const inclLen = view.getUint32(offset + 8, littleEndian);
@@ -444,10 +430,9 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   let packetCount = 0;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  // 1. Binary Header Validation & Traversal
+  // 1. Binary Header Validation
   if (bytes.length >= 4) {
     const magic = view.getUint32(0, false);
-
     if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
       const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
       let offset = 24;
@@ -462,21 +447,16 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       while (offset + 12 <= bytes.length) {
         const blockType = view.getUint32(offset, true);
         const blockLen = view.getUint32(offset + 4, true);
-
         if (blockLen < 12 || offset + blockLen > bytes.length) break;
-        if (blockType === 0x00000006 || blockType === 0x00000003) {
-          packetCount++;
-        }
+        if (blockType === 0x00000006 || blockType === 0x00000003) packetCount++;
         offset += blockLen;
       }
     }
   }
 
-  if (packetCount === 0) {
-    packetCount = Math.max(1, Math.floor(bytes.length / 128));
-  }
+  if (packetCount === 0) packetCount = Math.max(1, Math.floor(bytes.length / 128));
 
-  // 1b. Real DNS Record Extraction
+  // 1b. Structured DNS Record Extraction
   const { linkType, packets } = extractPackets(bytes);
   const dnsMessages = extractDnsMessagesFromPackets(packets, linkType);
   const dnsDomainInfo = new Map();
@@ -518,7 +498,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     rawText += decoder.decode(bytes.subarray(i, Math.min(i + chunkSize, totalChunks)));
   }
 
-  // 3. Structured Protocol Extraction
+  // 3. Protocol Extraction
   const domainRegex = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|cloud|info|xyz|app|online|site|ru|top|live|work|dev|biz|buzz|pw|tk|cc)/gi;
   const rawMatches = rawText.match(domainRegex) || [];
   const domainCounts = {};
@@ -534,14 +514,16 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
   }
 
-  // Extract HTTP Methods, Host Headers, & Request Paths
+  // Extract HTTP Methods & Paths (Hardened Login regex with boundary checks)
   const httpFlows = [];
   const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
   while ((httpMatch = httpMethodRegex.exec(rawText)) !== null) {
     const method = httpMatch[1];
     const path = httpMatch[2];
-    const isLogin = /login|auth|signin|password|session|oauth|token|credential/i.test(path);
+    
+    // Strict word boundaries to avoid matching "Authority" or "Author"
+    const isLogin = /(?:login|signin|password|session|oauth|credential|\bauth\b|\btoken\b)/i.test(path);
 
     const hostMatch = rawText.substring(httpMatch.index, httpMatch.index + 250).match(/Host:\s*([a-zA-Z0-9.-]+)/i);
     const flowHost = hostMatch ? hostMatch[1] : (Object.keys(domainCounts)[0] || 'unknown');
@@ -558,7 +540,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     if (httpFlows.length >= 40) break;
   }
 
-  // Extract TLS Server Name Indication (SNI)
+  // TLS SNI Extraction
   const tlsSessions = [];
   for (const [dom] of Object.entries(domainCounts)) {
     if (rawText.includes(dom)) {
@@ -585,8 +567,13 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   let threatScore = 0;
 
   // -------------------------------------------------------------
-  // Heuristic 1: Adversary-in-the-Middle (AiTM) Brand Spoofing
+  // Heuristic 1: Brand Impersonation & Safe CDN Distribution Mapping
   // -------------------------------------------------------------
+  const CDN_DISTRIBUTION_SUFFIXES = [
+    'cdn.cloudflare.net', 'akamaiedge.net', 'edgekey.net', 'trafficmanager.net',
+    'azureedge.net', 'azurefd.net', 'cloudfront.net', 'fastly.net'
+  ];
+
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
     let isLookalike = false;
@@ -600,20 +587,12 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     } else if (isKnownBenignRoot(domain)) {
       verified = true;
     } else {
-      // Check if domain is an official CDN endpoint fronting a valid brand
-      const isCdnDistribution = (
-        domain.endsWith('.cdn.cloudflare.net') ||
-        domain.endsWith('.akamaiedge.net') ||
-        domain.endsWith('.edgekey.net') ||
-        domain.endsWith('.trafficmanager.net') ||
-        domain.endsWith('.azureedge.net') ||
-        domain.endsWith('.azurefd.net') ||
-        domain.endsWith('.cloudfront.net')
-      );
-
-      if (isCdnDistribution) {
+      // Robust CDN CNAME evaluation: Extract prefix and check if it ends with legit root
+      const matchingCdn = CDN_DISTRIBUTION_SUFFIXES.find(cdn => domain.endsWith('.' + cdn));
+      if (matchingCdn) {
+        const prefix = domain.slice(0, -(matchingCdn.length + 1));
         for (const brand of TARGET_BRANDS) {
-          if (brand.legitSuffixes.some(suffix => domain.includes(suffix))) {
+          if (brand.legitSuffixes.some(s => prefix === s || prefix.endsWith('.' + s))) {
             brandDetected = brand.name;
             verified = true;
             break;
@@ -660,23 +639,24 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1b: Targeted Institutional Lures & Typosquatting
+  // Heuristic 1b: Institutional Lures & Generic Typosquatting
   // -------------------------------------------------------------
-  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)(flsenate|senate|congress|house|judiciary|uscourts|fbi|irs|medicare|benefits|unemployment|payroll|humanresources|hr-portal|sso|login|mfa|auth|verify|secure)\./i;
+  // Matches state or federal institutional lures (e.g. flsenate, casenate, txhouse, uscourts)
+  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)([a-z]{2}-?)?(?:senate|house|assembly|congress|legislature|judiciary|uscourts|court|police|sheriff|taxes|revenue|benefits|unemployment|payroll|humanresources|hr-portal|sso|mfa|auth|verify|secure)\./i;
+
+  // Generic phonetics & homoglyph consonant shifts (e.g. 'l' replacing 'i' in suffixes like '-ing/-ings')
+  const PHONETIC_HOMOGLYPH_REGEX = /[a-z0-9-]{3,}l(?:ng|ngs)\b/i;
 
   for (const [domain, count] of Object.entries(domainCounts)) {
     if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
 
     const isGovLure = INSTITUTIONAL_LURE_REGEX.test(domain) && !domain.endsWith('.gov') && !domain.endsWith('.mil');
-    
-    // Character substitutions (e.g., 'l' instead of 'i' in -ing words: rooflngs vs roofings)
-    const isTyposquat = /(?:roof|bank|pay|bill|mail|sign|secure|service|login|manage|support)l(?:ng|ngs)\b/i.test(domain) ||
-                        /(?:micros0ft|0ffice|g00gle|amaz0n|paypa1)/i.test(domain);
+    const isTyposquat = PHONETIC_HOMOGLYPH_REGEX.test(domain);
 
     if (isGovLure || isTyposquat) {
       threatScore += 80;
       const lureMatch = domain.match(INSTITUTIONAL_LURE_REGEX);
-      const lureName = lureMatch ? lureMatch[1].toUpperCase() : 'ORGANIZATIONAL';
+      const lureName = lureMatch ? lureMatch[0].replace(/^\.|\.$/g, '').toUpperCase() : 'ORGANIZATIONAL';
 
       findings.push({
         title: isGovLure
@@ -702,23 +682,17 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1c: High-Turnover Fast-Flux Botnets (Strict Anycast Exemption)
+  // Heuristic 1c: Algorithmic Fast-Flux Detection (Anycast Independent)
   // -------------------------------------------------------------
   for (const [domain, info] of dnsDomainInfo.entries()) {
     if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
 
-    // Filter Cloudflare Proxy IPs where 2 IPs is the standard configuration
-    const isCloudflareProxied = [...info.ips].every(ip =>
-      ip.startsWith('104.') || ip.startsWith('172.64.') || ip.startsWith('172.65.') ||
-      ip.startsWith('172.66.') || ip.startsWith('172.67.') || ip.startsWith('188.114.')
-    );
-
     const ipv4Only = [...info.ips].filter(ip => ip.includes('.'));
     const subnetSet = new Set(ipv4Only.map(ip => ip.split('.').slice(0, 2).join('.')));
 
-    // True fast-flux requires multiple IPs across distinct /16 routing subnets with short TTLs
-    if (!isCloudflareProxied && info.ips.size >= 4 && subnetSet.size >= 3 && info.minTtl !== null && info.minTtl <= 60) {
-      threatScore += 35;
+    // True fast-flux botnets rotate across 4+ IPs spanning 3+ independent /16 subnets with low TTL
+    if (info.ips.size >= 4 && subnetSet.size >= 3 && info.minTtl !== null && info.minTtl <= 60) {
+      threatScore += 40;
       findings.push({
         title: 'Fast-Flux / Botnet DNS Rotation Detected',
         description: `Domain '${domain}' resolved to ${info.ips.size} distinct IPs across ${subnetSet.size} distinct /16 network blocks with an aggressive TTL of ${info.minTtl}s.`,
@@ -734,7 +708,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1d: Phishing Evasion / Cloaking Redirects
+  // Heuristic 1d: Anti-Analysis Sandbox Cloaking & Open Redirects
   // -------------------------------------------------------------
   const httpRedirectRegex = /HTTP\/1\.[01]\s+(30[1278])\s+[^\r\n]*\r\n(?:[^\r\n]+\r\n)*?Location:\s*([^\r\n]+)/gi;
   let redirMatch;
@@ -746,8 +720,8 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const host = prevHostMatch ? prevHostMatch[1] : 'unknown';
 
     if (!isKnownBenignRoot(host) && !findBrandForRoot(host)) {
-      const cloakingTargets = ['amazon.com', 'google.com', 'microsoft.com', 'bing.com', 'apple.com'];
-      const isCloaking = cloakingTargets.some(t => loc.toLowerCase().includes(t));
+      const cloakingPlatforms = ['amazon.com', 'google.com', 'microsoft.com', 'bing.com', 'apple.com', 'wikipedia.org', 'yahoo.com'];
+      const isCloaking = cloakingPlatforms.some(t => loc.toLowerCase().includes(t));
 
       if (isCloaking) {
         threatScore += 65;
@@ -805,7 +779,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 3: PowerShell Staging & Malware Payloads (Hardened)
+  // Heuristic 3: PowerShell Staging (Strict Process / Execution Syntax)
   // -------------------------------------------------------------
   const isPowerShellFlow =
     /powershell(?:\.exe)?\s+.*?(?:-[eE](?:nc(?:odedcommand)?)?|-nop|-w\s+hidden)/i.test(rawText) ||
@@ -847,7 +821,8 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     .filter(d => !findBrandForRoot(d))
     .filter(d => !isKnownBenignRoot(d))
     .sort((a, b) => {
-      const suspiciousPattern = /(?:flsenate|senate|login|auth|portal|verify|rooflng|titan|c2|payload|update)/i;
+      // Prioritize generic threat/lure keywords and top malicious TLDs
+      const suspiciousPattern = /(?:login|auth|verify|secure|portal|account|update|admin|service|c2|payload|loader|drop|gate|stager|[a-z]{2}-?senate|[a-z]{2}-?gov|\.top$|\.xyz$|\.ru$|\.site$|\.click$|\.link$)/i;
       const aScore = (suspiciousPattern.test(a) ? 100 : 0) + (domainCounts[a] || 0);
       const bScore = (suspiciousPattern.test(b) ? 100 : 0) + (domainCounts[b] || 0);
       return bScore - aScore;
