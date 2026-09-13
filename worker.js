@@ -6,39 +6,91 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin'
 };
 
+// -------------------------------------------------------------
+// Brand Definitions — legitSuffixes expanded with additional
+// authoritative endpoints (M365 worldwide feed, Google Workspace,
+// Okta/Duo official domains) to reduce false positives on real
+// tenant subdomains that were previously unrecognized.
+// -------------------------------------------------------------
 const TARGET_BRANDS = [
   {
     name: 'Microsoft',
     legitSuffixes: [
       'microsoft.com',
       'microsoftonline.com',
+      'microsoftonline-p.com',
+      'microsoftonline-p.net',
       'live.com',
       'office.com',
+      'office365.com',
+      'office365.us',
+      'outlook.com',
+      'outlook.office.com',
+      'outlook.office365.com',
+      'onmicrosoft.com',
+      'microsoft365.com',
+      'sharepoint.com',
+      'sharepointonline.com',
       'azure.com',
+      'azure.net',
       'windows.net',
       'windows.com',
       'microsoftapp.net',
       'msftstatic.com',
+      'msauth.net',
+      'msftauth.net',
+      'msftauthimages.net',
+      'msauthimages.net',
+      'msidentity.com',
+      'msecnd.net',
       'msn.com',
       'azureedge.net',
+      'azurefd.net',
       'bing.com',
       'skype.com',
+      'yammer.com',
       'trafficmanager.net'
     ],
     regex: /(?:^|\.)(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)(?:\.|$)/i
   },
   {
     name: 'Okta',
-    legitSuffixes: ['okta.com', 'oktapreview.com'],
+    legitSuffixes: ['okta.com', 'oktapreview.com', 'oktacdn.com', 'okta-emea.com', 'trexcloud.com'],
     regex: /(?:^|\.)(?:login[-.]?)?(?:okta[-_.]auth|okta[-_.]login|0kta)(?:\.|$)/i
   },
   {
     name: 'Google',
-    legitSuffixes: ['google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com', 'googleusercontent.com'],
+    legitSuffixes: [
+      'google.com',
+      'accounts.google.com',
+      'gstatic.com',
+      'googleapis.com',
+      'googleusercontent.com',
+      'googlesyndication.com',
+      'googleadservices.com',
+      'googletagmanager.com',
+      'google-analytics.com',
+      'doubleclick.net',
+      'youtube.com',
+      'ytimg.com',
+      'ggpht.com',
+      'gvt1.com',
+      'gvt2.com',
+      'goo.gl',
+      'googlemail.com',
+      'workspace.google.com'
+    ],
     regex: /(?:^|\.)(?:g00gle|accounts[-_.]google|gmail[-_.]auth)(?:\.|$)/i
   }
 ];
 
+// -------------------------------------------------------------
+// Global benign infrastructure — split into the original curated
+// set plus an extended set informed by Cloudflare Radar top
+// domains, Tranco, and official vendor endpoint feeds (AWS,
+// Apple, common enterprise SaaS/CDNs). Cisco Umbrella/Alexa are
+// end-of-life and intentionally not used as a source here.
+// -------------------------------------------------------------
 const GLOBAL_BENIGN_ROOTS = [
   'cloudflare.com', 'digicert.com', 'globalsign.com', 'jsdelivr.net',
   'w3.org', 'xmlsoap.org', 'amazonaws.com', 'vimeo.com', 'vimeocdn.com',
@@ -48,6 +100,72 @@ const GLOBAL_BENIGN_ROOTS = [
   'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
   'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com'
 ];
+
+const EXTENDED_BENIGN_ROOTS = [
+  // Apple
+  'apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com',
+  // Identity / MFA vendors
+  'duosecurity.com', 'pingidentity.com', 'pingone.com', 'auth0.com', 'onelogin.com',
+  // AWS / cloud infra
+  'cloudfront.net', 'awsstatic.com', 'elasticbeanstalk.com', 'amazonaws.com',
+  's3.amazonaws.com', 'cloudapp.net', 'digitaloceanspaces.com',
+  // CDNs / static asset hosts
+  'unpkg.com', 'cdnjs.cloudflare.com', 'bootstrapcdn.com', 'jsdelivr.net',
+  'cachefly.net', 'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
+  // Hosting / static site platforms
+  'github.io', 'githubusercontent.com', 'github.com', 'netlify.app', 'vercel.app',
+  'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com',
+  // Enterprise SaaS commonly seen in corporate traffic
+  'salesforce.com', 'force.com', 'zendesk.com', 'hubspot.com', 'mailchimp.com',
+  'sendgrid.net', 'twilio.com', 'zoom.us', 'slack.com', 'atlassian.net',
+  'atlassian.com', 'dropboxusercontent.com', 'dropbox.com', 'box.com',
+  'docusign.net', 'docusign.com', 'adobe.com', 'adobelogin.com', 'workday.com',
+  'servicenow.com', 'asana.com', 'notion.so', 'figma.com', 'intercom.io',
+  // Browser / OS telemetry and update infra (frequently mistaken for C2)
+  'msedge.net', 'crashlytics.com', 'app-measurement.com', 'firebaseio.com',
+  'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com'
+];
+
+// Combined Set for O(1) membership checks; suffix matching is done
+// via label-walk (see isKnownBenignRoot) rather than array scans.
+const BENIGN_ROOTS_SET = new Set([...GLOBAL_BENIGN_ROOTS, ...EXTENDED_BENIGN_ROOTS]);
+
+// Map of authoritative brand root -> brand name, built once so a
+// legitimate subdomain (e.g. graph.microsoft.com) is recognized
+// and labeled without re-scanning every brand's suffix array.
+const BRAND_ROOT_MAP = new Map();
+for (const brand of TARGET_BRANDS) {
+  for (const suffix of brand.legitSuffixes) {
+    BRAND_ROOT_MAP.set(suffix, brand.name);
+  }
+}
+
+// Walks a domain's labels from most-specific to least-specific,
+// checking each progressively shorter suffix against a Set. This
+// is O(depth) instead of O(list length) per domain, which matters
+// under Workers' CPU time limits when many domains are extracted.
+function walkSuffixes(domain) {
+  const labels = domain.split('.');
+  const suffixes = [];
+  for (let i = 0; i < labels.length - 1; i++) {
+    suffixes.push(labels.slice(i).join('.'));
+  }
+  return suffixes;
+}
+
+function isKnownBenignRoot(domain) {
+  for (const suffix of walkSuffixes(domain)) {
+    if (BENIGN_ROOTS_SET.has(suffix)) return true;
+  }
+  return false;
+}
+
+function findBrandForRoot(domain) {
+  for (const suffix of walkSuffixes(domain)) {
+    if (BRAND_ROOT_MAP.has(suffix)) return BRAND_ROOT_MAP.get(suffix);
+  }
+  return null;
+}
 
 function safeUpperString(val, fallback = 'MALWARE') {
   if (typeof val === 'string' && val.trim().length > 0) return val.trim().toUpperCase();
@@ -91,9 +209,9 @@ export default {
         // Enforce the 25 MB boundary cleanly
         const MAX_BYTES = 25 * 1024 * 1024;
         if (file.size > MAX_BYTES) {
-          return new Response(JSON.stringify({ 
-            success: false, 
-            error: 'File exceeds the 25MB limit. Please filter or slice the capture in Wireshark before uploading.' 
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'File exceeds the 25MB limit. Please filter or slice the capture in Wireshark before uploading.'
           }), {
             status: 413,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
@@ -214,7 +332,9 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const tlsSessions = [];
   for (const [dom] of Object.entries(domainCounts)) {
     if (rawText.includes(dom)) {
-      const isSuspicious = TARGET_BRANDS.some(b => b.regex.test(dom) && !b.legitSuffixes.some(l => dom === l || dom.endsWith('.' + l)));
+      const brandRoot = findBrandForRoot(dom);
+      const isSuspicious = !brandRoot && !isKnownBenignRoot(dom) &&
+        TARGET_BRANDS.some(b => b.regex.test(dom));
       tlsSessions.push({
         sni: dom,
         clientIP: '192.168.1.' + (10 + (tlsSessions.length % 50)),
@@ -236,32 +356,43 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 
   // -------------------------------------------------------------
   // Heuristic 1: Adversary-in-the-Middle (AiTM) Brand Spoofing
+  //
+  // Domains are gated through the benign allowlist FIRST. A domain
+  // matching a known-legitimate brand root or the extended global
+  // benign set is marked verified and skips the impersonation
+  // check entirely, which is the primary false-positive reducer.
   // -------------------------------------------------------------
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
     let isLookalike = false;
+    let verified = false;
 
-    for (const brand of TARGET_BRANDS) {
-      const isLegitimate = brand.legitSuffixes.some(suffix => domain === suffix || domain.endsWith('.' + suffix));
-      const matchesBrandKeyword = brand.regex.test(domain);
+    const legitBrand = findBrandForRoot(domain);
 
-      if (matchesBrandKeyword && !isLegitimate) {
-        brandDetected = brand.name;
-        isLookalike = true;
-        lookalikeDomains.push(domain);
-        threatScore += 45;
+    if (legitBrand) {
+      brandDetected = legitBrand;
+      verified = true;
+    } else if (isKnownBenignRoot(domain)) {
+      verified = true;
+    } else {
+      for (const brand of TARGET_BRANDS) {
+        if (brand.regex.test(domain)) {
+          brandDetected = brand.name;
+          isLookalike = true;
+          lookalikeDomains.push(domain);
+          threatScore += 45;
 
-        findings.push({
-          title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
-          description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
-          severity: 'critical',
-          evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
-          mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
-        });
+          findings.push({
+            title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
+            description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
+            severity: 'critical',
+            evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
+            mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
+          });
 
-        iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
-      } else if (isLegitimate) {
-        brandDetected = brand.name;
+          iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
+          break; // a domain only needs to trip one brand's pattern to be flagged
+        }
       }
     }
 
@@ -271,6 +402,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       queryCount: count,
       brand: brandDetected,
       isLookalike,
+      verified,
       ttl: '60s'
     });
   }
@@ -294,9 +426,8 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const hasTurnstileScript = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
   const hasClipboardWrite = /clipboard(?:\.writeText|\.write)/i.test(rawText);
 
-  const compromisedCandidate = Object.keys(domainCounts).find(d => 
-    !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))) &&
-    !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b))
+  const compromisedCandidate = Object.keys(domainCounts).find(d =>
+    !findBrandForRoot(d) && !isKnownBenignRoot(d)
   ) || 'External Origin';
 
   if (hasClearFakeCdnCgi || (hasTurnstileScript && hasClipboardWrite)) {
@@ -347,10 +478,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 
   // -------------------------------------------------------------
   // Heuristic 4: Contextual Threat Intelligence Lookups
+  //
+  // Candidate domains sent out to third-party sandbox/reputation
+  // APIs are filtered through the same benign allowlist so verified
+  // infrastructure never burns API quota or risks a bad verdict.
   // -------------------------------------------------------------
   const candidateDomains = Object.keys(domainCounts)
-    .filter(d => !TARGET_BRANDS.some(b => b.legitSuffixes.some(l => d === l || d.endsWith('.' + l))))
-    .filter(d => !GLOBAL_BENIGN_ROOTS.some(b => d === b || d.endsWith('.' + b)))
+    .filter(d => !findBrandForRoot(d))
+    .filter(d => !isKnownBenignRoot(d))
     .sort((a, b) => {
       const suspiciousPattern = /(?:ddos|bot|c2|payload|loader|\.top$|\.xyz$|\.ru$|\.site$)/i;
       const aScore = (suspiciousPattern.test(a) ? 20 : 0) + (domainCounts[a] || 0);
@@ -617,7 +752,7 @@ function getDemoReport() {
         }
       ],
       domains: [
-        { domain: 'login.micros0ft-auth.com', ips: ['198.51.100.24'], queryCount: 12, brand: 'Microsoft', isLookalike: true, ttl: '60s' }
+        { domain: 'login.micros0ft-auth.com', ips: ['198.51.100.24'], queryCount: 12, brand: 'Microsoft', isLookalike: true, verified: false, ttl: '60s' }
       ],
       tlsSessions: [],
       httpFlows: [],
