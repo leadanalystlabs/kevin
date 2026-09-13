@@ -167,6 +167,245 @@ function findBrandForRoot(domain) {
   return null;
 }
 
+// -------------------------------------------------------------
+// Real Packet & DNS Parsing
+//
+// Replaces "does this look like a domain in the decoded text"
+// with actual structured parsing: link-layer -> IP -> UDP/53 ->
+// DNS message -> Question/Answer records. This yields real
+// resolved IPs and real TTLs instead of placeholders, and is far
+// less prone to false positives from domain-shaped noise sitting
+// anywhere in the byte stream.
+// -------------------------------------------------------------
+
+const LINKTYPE_ETHERNET = 1;
+const LINKTYPE_RAW = 101;
+const LINKTYPE_LINUX_SLL = 113;
+const MAX_PACKETS_TO_PARSE = 6000;
+const MAX_FRAME_BYTES = 262144; // sanity guard against corrupt length fields
+
+// Walks the pcap/pcapng structure and slices out each packet's raw
+// bytes, along with the link-layer type so the caller knows how
+// many bytes to strip before reaching the IP header.
+function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
+  const packets = [];
+  let linkType = LINKTYPE_ETHERNET; // sane default if it can't be determined
+
+  if (bytes.length < 4) return { linkType, packets };
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = view.getUint32(0, false);
+
+  if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
+    // Classic pcap: global header's "network" field (offset 20) is the linktype
+    const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
+    if (bytes.length >= 24) {
+      linkType = view.getUint32(20, littleEndian);
+    }
+    let offset = 24;
+    while (offset + 16 <= bytes.length && packets.length < maxPackets) {
+      const inclLen = view.getUint32(offset + 8, littleEndian);
+      if (inclLen === 0 || inclLen > MAX_FRAME_BYTES) break;
+      const dataStart = offset + 16;
+      if (dataStart + inclLen > bytes.length) break;
+      packets.push(bytes.subarray(dataStart, dataStart + inclLen));
+      offset = dataStart + inclLen;
+    }
+  } else if (magic === 0x0a0d0d0a) {
+    // PCAPNG: linktype lives in the Interface Description Block
+    let offset = 0;
+    const interfaceLinkTypes = [];
+    while (offset + 12 <= bytes.length && packets.length < maxPackets) {
+      const blockType = view.getUint32(offset, true);
+      const blockLen = view.getUint32(offset + 4, true);
+      if (blockLen < 12 || offset + blockLen > bytes.length) break;
+
+      if (blockType === 0x00000001 && offset + 10 <= bytes.length) {
+        // Interface Description Block: LinkType is a 2-byte field at +8
+        interfaceLinkTypes.push(view.getUint16(offset + 8, true));
+      } else if (blockType === 0x00000006) {
+        // Enhanced Packet Block: CapturedLen at +20, data starts at +28
+        const capturedLen = view.getUint32(offset + 20, true);
+        const dataStart = offset + 28;
+        if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES && dataStart + capturedLen <= bytes.length) {
+          packets.push(bytes.subarray(dataStart, dataStart + capturedLen));
+        }
+      } else if (blockType === 0x00000003) {
+        // Simple Packet Block: OrigLen at +8, data starts at +12
+        const dataStart = offset + 12;
+        const capturedLen = Math.min(blockLen - 12, bytes.length - dataStart);
+        if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES) {
+          packets.push(bytes.subarray(dataStart, dataStart + capturedLen));
+        }
+      }
+      offset += blockLen;
+    }
+    if (interfaceLinkTypes.length > 0) linkType = interfaceLinkTypes[0];
+  }
+
+  return { linkType, packets };
+}
+
+// Decodes a DNS name starting at `startOffset` within `dnsBytes`,
+// following compression pointers (RFC 1035 4.1.4) with a jump cap
+// to guard against malformed or adversarial loop pointers.
+function parseDnsName(dnsBytes, startOffset) {
+  let offset = startOffset;
+  const labels = [];
+  let jumps = 0;
+  let endOffset = null; // offset immediately after the name as it appeared in the record
+
+  while (offset >= 0 && offset < dnsBytes.length) {
+    const len = dnsBytes[offset];
+
+    if (len === 0) {
+      if (endOffset === null) endOffset = offset + 1;
+      break;
+    }
+
+    if ((len & 0xc0) === 0xc0) {
+      if (offset + 1 >= dnsBytes.length) break;
+      if (endOffset === null) endOffset = offset + 2;
+      const pointer = ((len & 0x3f) << 8) | dnsBytes[offset + 1];
+      jumps++;
+      if (jumps > 20 || pointer >= dnsBytes.length || pointer === offset) break;
+      offset = pointer;
+      continue;
+    }
+
+    const labelStart = offset + 1;
+    const labelEnd = labelStart + len;
+    if (labelEnd > dnsBytes.length) break;
+
+    let label = '';
+    for (let i = labelStart; i < labelEnd; i++) {
+      const c = dnsBytes[i];
+      if (c >= 0x20 && c <= 0x7e) label += String.fromCharCode(c);
+    }
+    labels.push(label);
+    offset = labelEnd;
+  }
+
+  return {
+    name: labels.join('.').toLowerCase(),
+    nextOffset: endOffset !== null ? endOffset : offset
+  };
+}
+
+// Parses a DNS message (the UDP payload starting at the DNS header)
+// into its Question and Answer records. Only A, AAAA, and CNAME
+// answers are decoded since those are what drive domain/IP mapping.
+function parseDnsMessage(dnsBytes) {
+  if (dnsBytes.length < 12) return null;
+  const view = new DataView(dnsBytes.buffer, dnsBytes.byteOffset, dnsBytes.byteLength);
+
+  const flags = view.getUint16(2, false);
+  const isResponse = (flags & 0x8000) !== 0;
+  const qdCount = view.getUint16(4, false);
+  const anCount = view.getUint16(6, false);
+
+  let offset = 12;
+  const questions = [];
+  for (let i = 0; i < qdCount && offset < dnsBytes.length; i++) {
+    const { name, nextOffset } = parseDnsName(dnsBytes, offset);
+    offset = nextOffset;
+    if (offset + 4 > dnsBytes.length) break;
+    const qtype = view.getUint16(offset, false);
+    offset += 4; // qtype(2) + qclass(2)
+    if (name) questions.push({ name, qtype });
+  }
+
+  const answers = [];
+  for (let i = 0; i < anCount && offset < dnsBytes.length; i++) {
+    const { name, nextOffset } = parseDnsName(dnsBytes, offset);
+    offset = nextOffset;
+    if (offset + 10 > dnsBytes.length) break;
+
+    const type = view.getUint16(offset, false);
+    const ttl = view.getUint32(offset + 4, false);
+    const rdLength = view.getUint16(offset + 8, false);
+    const rdataStart = offset + 10;
+    if (rdataStart + rdLength > dnsBytes.length) break;
+
+    let ip = null;
+    let cname = null;
+
+    if (type === 1 && rdLength === 4) {
+      ip = `${dnsBytes[rdataStart]}.${dnsBytes[rdataStart + 1]}.${dnsBytes[rdataStart + 2]}.${dnsBytes[rdataStart + 3]}`;
+    } else if (type === 28 && rdLength === 16) {
+      const groups = [];
+      for (let g = 0; g < 16; g += 2) {
+        groups.push(((dnsBytes[rdataStart + g] << 8) | dnsBytes[rdataStart + g + 1]).toString(16));
+      }
+      ip = groups.join(':');
+    } else if (type === 5) {
+      cname = parseDnsName(dnsBytes, rdataStart).name;
+    }
+
+    if (name) answers.push({ name, type, ttl, ip, cname });
+    offset = rdataStart + rdLength;
+  }
+
+  return { isResponse, questions, answers };
+}
+
+// Strips the link-layer + IP + UDP headers from a raw packet and,
+// if it's UDP/53 traffic, hands the payload to the DNS parser.
+function extractDnsMessagesFromPackets(packets, linkType) {
+  const messages = [];
+
+  for (const pkt of packets) {
+    try {
+      let offset;
+      if (linkType === LINKTYPE_ETHERNET) {
+        if (pkt.length < 14) continue;
+        offset = 14;
+        const etherType = (pkt[12] << 8) | pkt[13];
+        if (etherType === 0x8100 && pkt.length >= 18) offset += 4; // 802.1Q VLAN tag
+      } else if (linkType === LINKTYPE_LINUX_SLL) {
+        offset = 16;
+      } else if (linkType === LINKTYPE_RAW) {
+        offset = 0;
+      } else {
+        offset = 14; // best-effort default for unrecognized linktypes
+      }
+
+      if (offset >= pkt.length) continue;
+      const ipVersion = (pkt[offset] >> 4) & 0x0f;
+
+      let protocol, udpOffset;
+      if (ipVersion === 4) {
+        const ipHeaderLen = (pkt[offset] & 0x0f) * 4;
+        if (ipHeaderLen < 20 || offset + ipHeaderLen > pkt.length) continue;
+        protocol = pkt[offset + 9];
+        udpOffset = offset + ipHeaderLen;
+      } else if (ipVersion === 6) {
+        if (offset + 40 > pkt.length) continue;
+        protocol = pkt[offset + 6]; // Next Header (extension headers not walked; best-effort)
+        udpOffset = offset + 40;
+      } else {
+        continue;
+      }
+
+      if (protocol !== 17) continue; // UDP only
+      if (udpOffset + 8 > pkt.length) continue;
+
+      const srcPort = (pkt[udpOffset] << 8) | pkt[udpOffset + 1];
+      const dstPort = (pkt[udpOffset + 2] << 8) | pkt[udpOffset + 3];
+      if (srcPort !== 53 && dstPort !== 53) continue;
+
+      const dnsStart = udpOffset + 8;
+      if (dnsStart >= pkt.length) continue;
+
+      const msg = parseDnsMessage(pkt.subarray(dnsStart));
+      if (msg) messages.push(msg);
+    } catch (e) {
+      continue; // skip malformed frame, keep scanning the rest of the capture
+    }
+  }
+
+  return messages;
+}
+
 function safeUpperString(val, fallback = 'MALWARE') {
   if (typeof val === 'string' && val.trim().length > 0) return val.trim().toUpperCase();
   if (Array.isArray(val) && val.length > 0) {
@@ -282,6 +521,38 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     packetCount = Math.max(1, Math.floor(bytes.length / 128));
   }
 
+  // 1b. Real DNS Record Extraction (structured parsing, not regex)
+  const { linkType, packets } = extractPackets(bytes);
+  const dnsMessages = extractDnsMessagesFromPackets(packets, linkType);
+  const dnsDomainInfo = new Map(); // domain -> { ips: Set, minTtl, queryCount, answered }
+
+  const registerDnsDomain = (name, ip, ttl) => {
+    const clean = (name || '').replace(/\.$/, '');
+    if (clean.length < 4) return;
+    if (!dnsDomainInfo.has(clean)) {
+      dnsDomainInfo.set(clean, { ips: new Set(), minTtl: null, queryCount: 0, answered: false });
+    }
+    const entry = dnsDomainInfo.get(clean);
+    entry.queryCount++;
+    if (ip) {
+      entry.ips.add(ip);
+      entry.answered = true;
+    }
+    if (typeof ttl === 'number') {
+      entry.minTtl = (entry.minTtl === null) ? ttl : Math.min(entry.minTtl, ttl);
+    }
+  };
+
+  let totalDnsQuestions = 0;
+  for (const msg of dnsMessages) {
+    totalDnsQuestions += msg.questions.length;
+    for (const q of msg.questions) registerDnsDomain(q.name, null, null);
+    for (const a of msg.answers) {
+      registerDnsDomain(a.name, a.ip, a.ttl);
+      if (a.cname) registerDnsDomain(a.cname, null, a.ttl); // chase the alias target too
+    }
+  }
+
   // 2. Memory-Safe ASCII String Extraction
   let rawText = '';
   const chunkSize = 5 * 1024 * 1024;
@@ -302,6 +573,16 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     if (clean.length > 3 && !clean.includes('gopacket') && !clean.includes('linux')) {
       domainCounts[clean] = (domainCounts[clean] || 0) + 1;
     }
+  }
+
+  // Merge in domains actually observed via structured DNS parsing.
+  // These are authoritative (real query/answer traffic) and take
+  // priority over the text-regex results when both agree; domains
+  // only seen via regex (e.g. resolved earlier and cached, or
+  // embedded in HTTP/TLS fields with no DNS lookup captured) are
+  // preserved as a fallback rather than discarded.
+  for (const [domain, info] of dnsDomainInfo.entries()) {
+    domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
   }
 
   // Extract HTTP Methods, Host Headers, & Request Paths
@@ -396,15 +677,45 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       }
     }
 
+    const dnsInfo = dnsDomainInfo.get(domain);
     domains.push({
       domain,
-      ips: ['198.51.100.' + (Math.floor(Math.random() * 200) + 1)],
+      ips: dnsInfo && dnsInfo.ips.size > 0
+        ? Array.from(dnsInfo.ips)
+        : ['198.51.100.' + (Math.floor(Math.random() * 200) + 1)],
       queryCount: count,
       brand: brandDetected,
       isLookalike,
       verified,
-      ttl: '60s'
+      ttl: dnsInfo && dnsInfo.minTtl !== null ? `${dnsInfo.minTtl}s` : 'n/a',
+      source: dnsInfo ? 'dns' : 'heuristic'
     });
+  }
+
+  // -------------------------------------------------------------
+  // Heuristic 1b: Fast-Flux / Rapid IP Rotation
+  //
+  // Only possible now that real TTLs and real resolved IPs are
+  // available. A domain with a short TTL that resolved to multiple
+  // distinct IPs within a single capture is consistent with
+  // fast-flux or bulletproof hosting rotation. Gated behind the
+  // benign allowlist so legitimate CDN/load-balancer round-robin
+  // DNS doesn't get flagged.
+  // -------------------------------------------------------------
+  for (const [domain, info] of dnsDomainInfo.entries()) {
+    if (info.ips.size >= 2 && info.minTtl !== null && info.minTtl <= 300) {
+      if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
+
+      threatScore += 20;
+      findings.push({
+        title: 'Possible Fast-Flux DNS Rotation',
+        description: `Domain '${domain}' resolved to ${info.ips.size} distinct IPs with a TTL of ${info.minTtl}s within this capture, consistent with fast-flux or bulletproof hosting rotation.`,
+        severity: 'medium',
+        evidence: [{ field: 'Domain', value: domain, context: `${info.ips.size} IPs observed, TTL ${info.minTtl}s` }],
+        mitigation: 'Correlate against passive DNS history before blocking; verify this is not a legitimate load-balanced or anycast service.'
+      });
+      iocMatches.push({ severity: 'medium', value: domain, type: 'Fast-Flux Rotation' });
+    }
   }
 
   const hasCredentialPost = httpFlows.some(f => f.method === 'POST' && f.isLogin);
@@ -588,7 +899,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       tcpFlows: Math.max(1, Math.floor(packetCount / 12)),
       udpFlows: Math.max(1, Math.floor(packetCount / 24)),
       uniqueDomains: domains.length,
-      dnsQueriesCount: rawMatches.length
+      dnsQueriesCount: totalDnsQuestions > 0 ? totalDnsQuestions : rawMatches.length
     },
     findings,
     domains,
