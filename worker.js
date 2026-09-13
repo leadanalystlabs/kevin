@@ -514,7 +514,9 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
   }
 
-  // Extract HTTP Methods & Paths (Hardened Login regex with boundary checks)
+  // -------------------------------------------------------------
+  // High-Fidelity HTTP Flow & AiTM Application Inspection
+  // -------------------------------------------------------------
   const httpFlows = [];
   const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
@@ -522,11 +524,22 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const method = httpMatch[1];
     const path = httpMatch[2];
     
-    // Strict word boundaries to avoid matching "Authority" or "Author"
+    // Strict boundaries ensure CRL endpoints (e.g. Certificate Authority) are not falsely flagged
     const isLogin = /(?:login|signin|password|session|oauth|credential|\bauth\b|\btoken\b)/i.test(path);
 
-    const hostMatch = rawText.substring(httpMatch.index, httpMatch.index + 250).match(/Host:\s*([a-zA-Z0-9.-]+)/i);
-    const flowHost = hostMatch ? hostMatch[1] : (Object.keys(domainCounts)[0] || 'unknown');
+    // Bound the header search to the immediate HTTP block
+    const headerBlock = rawText.substring(httpMatch.index, Math.min(httpMatch.index + 1500, rawText.length));
+    const hostMatch = headerBlock.match(/^Host:\s*([a-zA-Z0-9.-]+)/im);
+    const flowHost = hostMatch ? hostMatch[1].toLowerCase() : (Object.keys(domainCounts)[0] || 'unknown');
+
+    const cookieMatch = headerBlock.match(/^(?:Set-Cookie|Cookie):\s*([^\r\n]+)/im);
+    const hasIdpCookie = cookieMatch ? /ESTSAUTH|ESTSAUTHPERSISTENT|OSID|session_token/i.test(cookieMatch[1]) : false;
+
+    // Detect AiTM URI proxying configurations (Evilginx / Tycoon / NakedPages)
+    let proxyTarget = null;
+    if (/^\/(?:common\/oauth2|login\.srf|kmsi|getcredentialtype|me\.htm|adfs\/ls)/i.test(path)) proxyTarget = 'Microsoft';
+    else if (/^\/(?:accountchooser|signin\/v[23]\/challenge|ServiceLogin)/i.test(path)) proxyTarget = 'Google';
+    else if (/^\/(?:api\/v1\/authn|login\/login\.htm|login\/step-up)/i.test(path)) proxyTarget = 'Okta';
 
     httpFlows.push({
       method,
@@ -535,12 +548,13 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       statusCode: method === 'POST' ? 302 : 200,
       location: '',
       hasSetCookie: method === 'POST',
+      hasIdpCookie,
+      proxyTarget,
       isLogin
     });
-    if (httpFlows.length >= 40) break;
+    if (httpFlows.length >= 60) break;
   }
 
-  // TLS SNI Extraction
   const tlsSessions = [];
   for (const [dom] of Object.entries(domainCounts)) {
     if (rawText.includes(dom)) {
@@ -567,7 +581,48 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   let threatScore = 0;
 
   // -------------------------------------------------------------
-  // Heuristic 1: Brand Impersonation & Safe CDN Distribution Mapping
+  // Heuristic 1a: High-Fidelity AiTM Proxy & Token Theft
+  // -------------------------------------------------------------
+  const aitmDomains = new Set();
+  
+  for (const flow of httpFlows) {
+    if (findBrandForRoot(flow.host) || isKnownBenignRoot(flow.host)) continue;
+
+    if (flow.proxyTarget && !aitmDomains.has(flow.host)) {
+      threatScore += 90;
+      aitmDomains.add(flow.host);
+      findings.push({
+        title: `Adversary-in-the-Middle (AiTM) Reverse Proxy Detected`,
+        description: `Host '${flow.host}' is actively proxying ${flow.proxyTarget} authentication URIs. This is a deterministic signature of an AiTM phishing kit (e.g., Evilginx, Tycoon 2FA) attempting to bypass MFA.`,
+        severity: 'critical',
+        evidence: [
+          { field: 'Malicious Proxy', value: flow.host, context: 'Unverified infrastructure' },
+          { field: 'Proxied URI', value: flow.path, context: `${flow.proxyTarget} Identity Provider endpoint` }
+        ],
+        mitigation: 'Block domain immediately. Enforce FIDO2/Passkey authentication to prevent reverse-proxy session interception.'
+      });
+      iocMatches.push({ severity: 'critical', value: flow.host, type: 'AiTM Phishing Proxy' });
+    }
+
+    if (flow.hasIdpCookie && !aitmDomains.has(flow.host + '_cookie')) {
+      threatScore += 100;
+      aitmDomains.add(flow.host + '_cookie');
+      findings.push({
+        title: `Post-MFA Session Cookie Theft / Interception`,
+        description: `Highly sensitive identity session cookies (e.g., ESTSAUTH) were transmitted to or issued by the unverified host '${flow.host}'. The attacker has successfully intercepted an authenticated session.`,
+        severity: 'critical',
+        evidence: [
+          { field: 'Target Host', value: flow.host, context: 'Attacker-controlled proxy' },
+          { field: 'Artifact', value: 'Identity Session Cookie', context: 'MFA Bypass token stolen' }
+        ],
+        mitigation: 'Immediately revoke all active session cookies for the affected user. Reset passwords and audit mailbox forwarding rules for BEC activity.'
+      });
+      iocMatches.push({ severity: 'critical', value: flow.host, type: 'AiTM Session Hijack' });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Heuristic 1b: Brand Impersonation / Lookalike Domains (Fallback)
   // -------------------------------------------------------------
   const CDN_DISTRIBUTION_SUFFIXES = [
     'cdn.cloudflare.net', 'akamaiedge.net', 'edgekey.net', 'trafficmanager.net',
@@ -587,7 +642,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     } else if (isKnownBenignRoot(domain)) {
       verified = true;
     } else {
-      // Robust CDN CNAME evaluation: Extract prefix and check if it ends with legit root
       const matchingCdn = CDN_DISTRIBUTION_SUFFIXES.find(cdn => domain.endsWith('.' + cdn));
       if (matchingCdn) {
         const prefix = domain.slice(0, -(matchingCdn.length + 1));
@@ -600,7 +654,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         }
       }
 
-      if (!verified) {
+      if (!verified && !aitmDomains.has(domain)) {
         for (const brand of TARGET_BRANDS) {
           if (brand.regex.test(domain)) {
             brandDetected = brand.name;
@@ -639,49 +693,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1b: Institutional Lures & Generic Typosquatting
-  // -------------------------------------------------------------
-  // Matches state or federal institutional lures (e.g. flsenate, casenate, txhouse, uscourts)
-  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)([a-z]{2}-?)?(?:senate|house|assembly|congress|legislature|judiciary|uscourts|court|police|sheriff|taxes|revenue|benefits|unemployment|payroll|humanresources|hr-portal|sso|mfa|auth|verify|secure)\./i;
-
-  // Generic phonetics & homoglyph consonant shifts (e.g. 'l' replacing 'i' in suffixes like '-ing/-ings')
-  const PHONETIC_HOMOGLYPH_REGEX = /[a-z0-9-]{3,}l(?:ng|ngs)\b/i;
-
-  for (const [domain, count] of Object.entries(domainCounts)) {
-    if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
-
-    const isGovLure = INSTITUTIONAL_LURE_REGEX.test(domain) && !domain.endsWith('.gov') && !domain.endsWith('.mil');
-    const isTyposquat = PHONETIC_HOMOGLYPH_REGEX.test(domain);
-
-    if (isGovLure || isTyposquat) {
-      threatScore += 80;
-      const lureMatch = domain.match(INSTITUTIONAL_LURE_REGEX);
-      const lureName = lureMatch ? lureMatch[0].replace(/^\.|\.$/g, '').toUpperCase() : 'ORGANIZATIONAL';
-
-      findings.push({
-        title: isGovLure
-          ? `Targeted Institutional Lure (${lureName} Impersonation)`
-          : `Typosquatted Phishing Domain (${domain})`,
-        description: isGovLure
-          ? `Observed high-risk subdomain '${domain}' mimicking official legislative/institutional infrastructure on an unverified commercial domain.`
-          : `Observed domain '${domain}' utilizing character substitution/homoglyphs (e.g. 'l' for 'i') to deceive users.`,
-        severity: 'critical',
-        evidence: [
-          { field: 'Domain', value: domain, context: isGovLure ? 'Institutional Spear-Phishing Lure' : 'Homoglyph Typosquatting' },
-          { field: 'Queries Observed', value: String(count), context: 'Active Network Artifact' }
-        ],
-        mitigation: 'Block domain immediately at edge firewalls. Reset credentials for users visiting this infrastructure.'
-      });
-
-      iocMatches.push({
-        severity: 'critical',
-        value: domain,
-        type: isGovLure ? 'Institutional Phishing Lure' : 'Typosquatted Domain'
-      });
-    }
-  }
-
-  // -------------------------------------------------------------
   // Heuristic 1c: Algorithmic Fast-Flux Detection (Anycast Independent)
   // -------------------------------------------------------------
   for (const [domain, info] of dnsDomainInfo.entries()) {
@@ -690,7 +701,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const ipv4Only = [...info.ips].filter(ip => ip.includes('.'));
     const subnetSet = new Set(ipv4Only.map(ip => ip.split('.').slice(0, 2).join('.')));
 
-    // True fast-flux botnets rotate across 4+ IPs spanning 3+ independent /16 subnets with low TTL
     if (info.ips.size >= 4 && subnetSet.size >= 3 && info.minTtl !== null && info.minTtl <= 60) {
       threatScore += 40;
       findings.push({
@@ -738,18 +748,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         iocMatches.push({ severity: 'high', value: `${host} -> ${loc}`, type: 'Cloaking Redirect' });
       }
     }
-  }
-
-  const hasCredentialPost = httpFlows.some(f => f.method === 'POST' && f.isLogin);
-  if (hasCredentialPost && lookalikeDomains.length > 0) {
-    threatScore += 50;
-    findings.push({
-      title: 'Adversary-in-the-Middle (AiTM) Credential Submission Observed',
-      description: 'Captured an HTTP POST request targeting authentication endpoints hosted on an impersonated domain.',
-      severity: 'critical',
-      evidence: [{ field: 'Target', value: lookalikeDomains[0], context: 'Reverse proxy capturing credentials' }],
-      mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant hardware keys across all accounts.'
-    });
   }
 
   // -------------------------------------------------------------
@@ -821,7 +819,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     .filter(d => !findBrandForRoot(d))
     .filter(d => !isKnownBenignRoot(d))
     .sort((a, b) => {
-      // Prioritize generic threat/lure keywords and top malicious TLDs
       const suspiciousPattern = /(?:login|auth|verify|secure|portal|account|update|admin|service|c2|payload|loader|drop|gate|stager|[a-z]{2}-?senate|[a-z]{2}-?gov|\.top$|\.xyz$|\.ru$|\.site$|\.click$|\.link$)/i;
       const aScore = (suspiciousPattern.test(a) ? 100 : 0) + (domainCounts[a] || 0);
       const bScore = (suspiciousPattern.test(b) ? 100 : 0) + (domainCounts[b] || 0);
