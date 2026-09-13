@@ -6,12 +6,6 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin'
 };
 
-// -------------------------------------------------------------
-// Brand Definitions — legitSuffixes expanded with additional
-// authoritative endpoints (M365 worldwide feed, Google Workspace,
-// Okta/Duo official domains) to reduce false positives on real
-// tenant subdomains that were previously unrecognized.
-// -------------------------------------------------------------
 const TARGET_BRANDS = [
   {
     name: 'Microsoft',
@@ -84,19 +78,14 @@ const TARGET_BRANDS = [
   }
 ];
 
-// -------------------------------------------------------------
-// Global benign infrastructure — split into the original curated
-// set plus an extended set informed by Cloudflare Radar top
-// domains, Tranco, and official vendor endpoint feeds (AWS,
-// Apple, common enterprise SaaS/CDNs). Cisco Umbrella/Alexa are
-// end-of-life and intentionally not used as a source here.
-// -------------------------------------------------------------
+// Expanded with authoritative CDN, Cloud Edge, and Anycast roots
 const GLOBAL_BENIGN_ROOTS = [
-  'cloudflare.com', 'digicert.com', 'globalsign.com', 'jsdelivr.net',
-  'w3.org', 'xmlsoap.org', 'amazonaws.com', 'vimeo.com', 'vimeocdn.com',
-  'stripe.com', 'stripecdn.com', 'facebook.com', 'tiktok.com', 'linkedin.com',
-  'reddit.com', 'twitter.com', 'fontawesome.com', 'google-analytics.com',
-  'googletagmanager.com', 'akamai.net', 'akamaized.net', 'edgekey.net',
+  'cloudflare.com', 'cloudflare.net', 'cloudflare-ech.com', 'cloudflareinsights.com',
+  'digicert.com', 'globalsign.com', 'jsdelivr.net', 'w3.org', 'xmlsoap.org',
+  'amazonaws.com', 'vimeo.com', 'vimeocdn.com', 'stripe.com', 'stripecdn.com',
+  'facebook.com', 'tiktok.com', 'linkedin.com', 'reddit.com', 'twitter.com',
+  'fontawesome.com', 'google-analytics.com', 'googletagmanager.com',
+  'akamai.net', 'akamaiedge.net', 'akadns.net', 'akamaized.net', 'edgekey.net',
   'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
   'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com'
 ];
@@ -106,33 +95,31 @@ const EXTENDED_BENIGN_ROOTS = [
   'apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com',
   // Identity / MFA vendors
   'duosecurity.com', 'pingidentity.com', 'pingone.com', 'auth0.com', 'onelogin.com',
-  // AWS / cloud infra
-  'cloudfront.net', 'awsstatic.com', 'elasticbeanstalk.com', 'amazonaws.com',
-  's3.amazonaws.com', 'cloudapp.net', 'digitaloceanspaces.com',
+  // AWS / Cloud / Anycast infra
+  'cloudfront.net', 'awsstatic.com', 'elasticbeanstalk.com', 's3.amazonaws.com',
+  'cloudapp.net', 'digitaloceanspaces.com', 'awswaf.com', 'a2z.com', 'amazon.com',
+  'amazon-adsystem.com', 'media-amazon.com', 'ssl-images-amazon.com',
   // CDNs / static asset hosts
-  'unpkg.com', 'cdnjs.cloudflare.com', 'bootstrapcdn.com', 'jsdelivr.net',
-  'cachefly.net', 'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
-  // Hosting / static site platforms
+  'unpkg.com', 'cdnjs.cloudflare.com', 'bootstrapcdn.com', 'cachefly.net',
+  'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
+  // Hosting / code repositories
   'github.io', 'githubusercontent.com', 'github.com', 'netlify.app', 'vercel.app',
   'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com',
-  // Enterprise SaaS commonly seen in corporate traffic
+  // Enterprise SaaS & Telemetry
   'salesforce.com', 'force.com', 'zendesk.com', 'hubspot.com', 'mailchimp.com',
   'sendgrid.net', 'twilio.com', 'zoom.us', 'slack.com', 'atlassian.net',
   'atlassian.com', 'dropboxusercontent.com', 'dropbox.com', 'box.com',
   'docusign.net', 'docusign.com', 'adobe.com', 'adobelogin.com', 'workday.com',
   'servicenow.com', 'asana.com', 'notion.so', 'figma.com', 'intercom.io',
-  // Browser / OS telemetry and update infra (frequently mistaken for C2)
   'msedge.net', 'crashlytics.com', 'app-measurement.com', 'firebaseio.com',
-  'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com'
+  'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com',
+  // Ad & Attribution Networks
+  'adnxs.com', 'rubiconproject.com', 'casalemedia.com', 'pubmatic.com',
+  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net'
 ];
 
-// Combined Set for O(1) membership checks; suffix matching is done
-// via label-walk (see isKnownBenignRoot) rather than array scans.
 const BENIGN_ROOTS_SET = new Set([...GLOBAL_BENIGN_ROOTS, ...EXTENDED_BENIGN_ROOTS]);
 
-// Map of authoritative brand root -> brand name, built once so a
-// legitimate subdomain (e.g. graph.microsoft.com) is recognized
-// and labeled without re-scanning every brand's suffix array.
 const BRAND_ROOT_MAP = new Map();
 for (const brand of TARGET_BRANDS) {
   for (const suffix of brand.legitSuffixes) {
@@ -140,10 +127,6 @@ for (const brand of TARGET_BRANDS) {
   }
 }
 
-// Walks a domain's labels from most-specific to least-specific,
-// checking each progressively shorter suffix against a Set. This
-// is O(depth) instead of O(list length) per domain, which matters
-// under Workers' CPU time limits when many domains are extracted.
 function walkSuffixes(domain) {
   const labels = domain.split('.');
   const suffixes = [];
@@ -167,36 +150,21 @@ function findBrandForRoot(domain) {
   return null;
 }
 
-// -------------------------------------------------------------
-// Real Packet & DNS Parsing
-//
-// Replaces "does this look like a domain in the decoded text"
-// with actual structured parsing: link-layer -> IP -> UDP/53 ->
-// DNS message -> Question/Answer records. This yields real
-// resolved IPs and real TTLs instead of placeholders, and is far
-// less prone to false positives from domain-shaped noise sitting
-// anywhere in the byte stream.
-// -------------------------------------------------------------
-
 const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
 const LINKTYPE_LINUX_SLL = 113;
 const MAX_PACKETS_TO_PARSE = 6000;
-const MAX_FRAME_BYTES = 262144; // sanity guard against corrupt length fields
+const MAX_FRAME_BYTES = 262144;
 
-// Walks the pcap/pcapng structure and slices out each packet's raw
-// bytes, along with the link-layer type so the caller knows how
-// many bytes to strip before reaching the IP header.
 function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
   const packets = [];
-  let linkType = LINKTYPE_ETHERNET; // sane default if it can't be determined
+  let linkType = LINKTYPE_ETHERNET;
 
   if (bytes.length < 4) return { linkType, packets };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = view.getUint32(0, false);
 
   if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
-    // Classic pcap: global header's "network" field (offset 20) is the linktype
     const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
     if (bytes.length >= 24) {
       linkType = view.getUint32(20, littleEndian);
@@ -211,7 +179,6 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
       offset = dataStart + inclLen;
     }
   } else if (magic === 0x0a0d0d0a) {
-    // PCAPNG: linktype lives in the Interface Description Block
     let offset = 0;
     const interfaceLinkTypes = [];
     while (offset + 12 <= bytes.length && packets.length < maxPackets) {
@@ -220,17 +187,14 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
       if (blockLen < 12 || offset + blockLen > bytes.length) break;
 
       if (blockType === 0x00000001 && offset + 10 <= bytes.length) {
-        // Interface Description Block: LinkType is a 2-byte field at +8
         interfaceLinkTypes.push(view.getUint16(offset + 8, true));
       } else if (blockType === 0x00000006) {
-        // Enhanced Packet Block: CapturedLen at +20, data starts at +28
         const capturedLen = view.getUint32(offset + 20, true);
         const dataStart = offset + 28;
         if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES && dataStart + capturedLen <= bytes.length) {
           packets.push(bytes.subarray(dataStart, dataStart + capturedLen));
         }
       } else if (blockType === 0x00000003) {
-        // Simple Packet Block: OrigLen at +8, data starts at +12
         const dataStart = offset + 12;
         const capturedLen = Math.min(blockLen - 12, bytes.length - dataStart);
         if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES) {
@@ -245,14 +209,11 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
   return { linkType, packets };
 }
 
-// Decodes a DNS name starting at `startOffset` within `dnsBytes`,
-// following compression pointers (RFC 1035 4.1.4) with a jump cap
-// to guard against malformed or adversarial loop pointers.
 function parseDnsName(dnsBytes, startOffset) {
   let offset = startOffset;
   const labels = [];
   let jumps = 0;
-  let endOffset = null; // offset immediately after the name as it appeared in the record
+  let endOffset = null;
 
   while (offset >= 0 && offset < dnsBytes.length) {
     const len = dnsBytes[offset];
@@ -291,9 +252,6 @@ function parseDnsName(dnsBytes, startOffset) {
   };
 }
 
-// Parses a DNS message (the UDP payload starting at the DNS header)
-// into its Question and Answer records. Only A, AAAA, and CNAME
-// answers are decoded since those are what drive domain/IP mapping.
 function parseDnsMessage(dnsBytes) {
   if (dnsBytes.length < 12) return null;
   const view = new DataView(dnsBytes.buffer, dnsBytes.byteOffset, dnsBytes.byteLength);
@@ -310,7 +268,7 @@ function parseDnsMessage(dnsBytes) {
     offset = nextOffset;
     if (offset + 4 > dnsBytes.length) break;
     const qtype = view.getUint16(offset, false);
-    offset += 4; // qtype(2) + qclass(2)
+    offset += 4;
     if (name) questions.push({ name, qtype });
   }
 
@@ -348,8 +306,6 @@ function parseDnsMessage(dnsBytes) {
   return { isResponse, questions, answers };
 }
 
-// Strips the link-layer + IP + UDP headers from a raw packet and,
-// if it's UDP/53 traffic, hands the payload to the DNS parser.
 function extractDnsMessagesFromPackets(packets, linkType) {
   const messages = [];
 
@@ -360,13 +316,13 @@ function extractDnsMessagesFromPackets(packets, linkType) {
         if (pkt.length < 14) continue;
         offset = 14;
         const etherType = (pkt[12] << 8) | pkt[13];
-        if (etherType === 0x8100 && pkt.length >= 18) offset += 4; // 802.1Q VLAN tag
+        if (etherType === 0x8100 && pkt.length >= 18) offset += 4;
       } else if (linkType === LINKTYPE_LINUX_SLL) {
         offset = 16;
       } else if (linkType === LINKTYPE_RAW) {
         offset = 0;
       } else {
-        offset = 14; // best-effort default for unrecognized linktypes
+        offset = 14;
       }
 
       if (offset >= pkt.length) continue;
@@ -380,13 +336,13 @@ function extractDnsMessagesFromPackets(packets, linkType) {
         udpOffset = offset + ipHeaderLen;
       } else if (ipVersion === 6) {
         if (offset + 40 > pkt.length) continue;
-        protocol = pkt[offset + 6]; // Next Header (extension headers not walked; best-effort)
+        protocol = pkt[offset + 6];
         udpOffset = offset + 40;
       } else {
         continue;
       }
 
-      if (protocol !== 17) continue; // UDP only
+      if (protocol !== 17) continue;
       if (udpOffset + 8 > pkt.length) continue;
 
       const srcPort = (pkt[udpOffset] << 8) | pkt[udpOffset + 1];
@@ -399,7 +355,7 @@ function extractDnsMessagesFromPackets(packets, linkType) {
       const msg = parseDnsMessage(pkt.subarray(dnsStart));
       if (msg) messages.push(msg);
     } catch (e) {
-      continue; // skip malformed frame, keep scanning the rest of the capture
+      continue;
     }
   }
 
@@ -445,7 +401,6 @@ export default {
           });
         }
 
-        // Enforce the 25 MB boundary cleanly
         const MAX_BYTES = 25 * 1024 * 1024;
         if (file.size > MAX_BYTES) {
           return new Response(JSON.stringify({
@@ -521,10 +476,10 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     packetCount = Math.max(1, Math.floor(bytes.length / 128));
   }
 
-  // 1b. Real DNS Record Extraction (structured parsing, not regex)
+  // 1b. Real DNS Record Extraction
   const { linkType, packets } = extractPackets(bytes);
   const dnsMessages = extractDnsMessagesFromPackets(packets, linkType);
-  const dnsDomainInfo = new Map(); // domain -> { ips: Set, minTtl, queryCount, answered }
+  const dnsDomainInfo = new Map();
 
   const registerDnsDomain = (name, ip, ttl) => {
     const clean = (name || '').replace(/\.$/, '');
@@ -549,7 +504,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     for (const q of msg.questions) registerDnsDomain(q.name, null, null);
     for (const a of msg.answers) {
       registerDnsDomain(a.name, a.ip, a.ttl);
-      if (a.cname) registerDnsDomain(a.cname, null, a.ttl); // chase the alias target too
+      if (a.cname) registerDnsDomain(a.cname, null, a.ttl);
     }
   }
 
@@ -575,12 +530,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // Merge in domains actually observed via structured DNS parsing.
-  // These are authoritative (real query/answer traffic) and take
-  // priority over the text-regex results when both agree; domains
-  // only seen via regex (e.g. resolved earlier and cached, or
-  // embedded in HTTP/TLS fields with no DNS lookup captured) are
-  // preserved as a fallback rather than discarded.
   for (const [domain, info] of dnsDomainInfo.entries()) {
     domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
   }
@@ -602,11 +551,11 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       host: flowHost,
       path: path.length > 150 ? path.substring(0, 147) + '...' : path,
       statusCode: method === 'POST' ? 302 : 200,
-      location: method === 'POST' ? '/redirect' : '',
+      location: '',
       hasSetCookie: method === 'POST',
       isLogin
     });
-    if (httpFlows.length >= 35) break;
+    if (httpFlows.length >= 40) break;
   }
 
   // Extract TLS Server Name Indication (SNI)
@@ -637,11 +586,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 
   // -------------------------------------------------------------
   // Heuristic 1: Adversary-in-the-Middle (AiTM) Brand Spoofing
-  //
-  // Domains are gated through the benign allowlist FIRST. A domain
-  // matching a known-legitimate brand root or the extended global
-  // benign set is marked verified and skips the impersonation
-  // check entirely, which is the primary false-positive reducer.
   // -------------------------------------------------------------
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
@@ -656,23 +600,46 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     } else if (isKnownBenignRoot(domain)) {
       verified = true;
     } else {
-      for (const brand of TARGET_BRANDS) {
-        if (brand.regex.test(domain)) {
-          brandDetected = brand.name;
-          isLookalike = true;
-          lookalikeDomains.push(domain);
-          threatScore += 45;
+      // Check if domain is an official CDN endpoint fronting a valid brand
+      const isCdnDistribution = (
+        domain.endsWith('.cdn.cloudflare.net') ||
+        domain.endsWith('.akamaiedge.net') ||
+        domain.endsWith('.edgekey.net') ||
+        domain.endsWith('.trafficmanager.net') ||
+        domain.endsWith('.azureedge.net') ||
+        domain.endsWith('.azurefd.net') ||
+        domain.endsWith('.cloudfront.net')
+      );
 
-          findings.push({
-            title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
-            description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
-            severity: 'critical',
-            evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
-            mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
-          });
+      if (isCdnDistribution) {
+        for (const brand of TARGET_BRANDS) {
+          if (brand.legitSuffixes.some(suffix => domain.includes(suffix))) {
+            brandDetected = brand.name;
+            verified = true;
+            break;
+          }
+        }
+      }
 
-          iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
-          break; // a domain only needs to trip one brand's pattern to be flagged
+      if (!verified) {
+        for (const brand of TARGET_BRANDS) {
+          if (brand.regex.test(domain)) {
+            brandDetected = brand.name;
+            isLookalike = true;
+            lookalikeDomains.push(domain);
+            threatScore += 45;
+
+            findings.push({
+              title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
+              description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
+              severity: 'critical',
+              evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
+              mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
+            });
+
+            iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
+            break;
+          }
         }
       }
     }
@@ -693,28 +660,109 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1b: Fast-Flux / Rapid IP Rotation
-  //
-  // Only possible now that real TTLs and real resolved IPs are
-  // available. A domain with a short TTL that resolved to multiple
-  // distinct IPs within a single capture is consistent with
-  // fast-flux or bulletproof hosting rotation. Gated behind the
-  // benign allowlist so legitimate CDN/load-balancer round-robin
-  // DNS doesn't get flagged.
+  // Heuristic 1b: Targeted Institutional Lures & Typosquatting
+  // -------------------------------------------------------------
+  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)(flsenate|senate|congress|house|judiciary|uscourts|fbi|irs|medicare|benefits|unemployment|payroll|humanresources|hr-portal|sso|login|mfa|auth|verify|secure)\./i;
+
+  for (const [domain, count] of Object.entries(domainCounts)) {
+    if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
+
+    const isGovLure = INSTITUTIONAL_LURE_REGEX.test(domain) && !domain.endsWith('.gov') && !domain.endsWith('.mil');
+    
+    // Character substitutions (e.g., 'l' instead of 'i' in -ing words: rooflngs vs roofings)
+    const isTyposquat = /(?:roof|bank|pay|bill|mail|sign|secure|service|login|manage|support)l(?:ng|ngs)\b/i.test(domain) ||
+                        /(?:micros0ft|0ffice|g00gle|amaz0n|paypa1)/i.test(domain);
+
+    if (isGovLure || isTyposquat) {
+      threatScore += 80;
+      const lureMatch = domain.match(INSTITUTIONAL_LURE_REGEX);
+      const lureName = lureMatch ? lureMatch[1].toUpperCase() : 'ORGANIZATIONAL';
+
+      findings.push({
+        title: isGovLure
+          ? `Targeted Institutional Lure (${lureName} Impersonation)`
+          : `Typosquatted Phishing Domain (${domain})`,
+        description: isGovLure
+          ? `Observed high-risk subdomain '${domain}' mimicking official legislative/institutional infrastructure on an unverified commercial domain.`
+          : `Observed domain '${domain}' utilizing character substitution/homoglyphs (e.g. 'l' for 'i') to deceive users.`,
+        severity: 'critical',
+        evidence: [
+          { field: 'Domain', value: domain, context: isGovLure ? 'Institutional Spear-Phishing Lure' : 'Homoglyph Typosquatting' },
+          { field: 'Queries Observed', value: String(count), context: 'Active Network Artifact' }
+        ],
+        mitigation: 'Block domain immediately at edge firewalls. Reset credentials for users visiting this infrastructure.'
+      });
+
+      iocMatches.push({
+        severity: 'critical',
+        value: domain,
+        type: isGovLure ? 'Institutional Phishing Lure' : 'Typosquatted Domain'
+      });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Heuristic 1c: High-Turnover Fast-Flux Botnets (Strict Anycast Exemption)
   // -------------------------------------------------------------
   for (const [domain, info] of dnsDomainInfo.entries()) {
-    if (info.ips.size >= 2 && info.minTtl !== null && info.minTtl <= 300) {
-      if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
+    if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
 
-      threatScore += 20;
+    // Filter Cloudflare Proxy IPs where 2 IPs is the standard configuration
+    const isCloudflareProxied = [...info.ips].every(ip =>
+      ip.startsWith('104.') || ip.startsWith('172.64.') || ip.startsWith('172.65.') ||
+      ip.startsWith('172.66.') || ip.startsWith('172.67.') || ip.startsWith('188.114.')
+    );
+
+    const ipv4Only = [...info.ips].filter(ip => ip.includes('.'));
+    const subnetSet = new Set(ipv4Only.map(ip => ip.split('.').slice(0, 2).join('.')));
+
+    // True fast-flux requires multiple IPs across distinct /16 routing subnets with short TTLs
+    if (!isCloudflareProxied && info.ips.size >= 4 && subnetSet.size >= 3 && info.minTtl !== null && info.minTtl <= 60) {
+      threatScore += 35;
       findings.push({
-        title: 'Possible Fast-Flux DNS Rotation',
-        description: `Domain '${domain}' resolved to ${info.ips.size} distinct IPs with a TTL of ${info.minTtl}s within this capture, consistent with fast-flux or bulletproof hosting rotation.`,
-        severity: 'medium',
-        evidence: [{ field: 'Domain', value: domain, context: `${info.ips.size} IPs observed, TTL ${info.minTtl}s` }],
-        mitigation: 'Correlate against passive DNS history before blocking; verify this is not a legitimate load-balanced or anycast service.'
+        title: 'Fast-Flux / Botnet DNS Rotation Detected',
+        description: `Domain '${domain}' resolved to ${info.ips.size} distinct IPs across ${subnetSet.size} distinct /16 network blocks with an aggressive TTL of ${info.minTtl}s.`,
+        severity: 'high',
+        evidence: [
+          { field: 'Domain', value: domain, context: `${info.ips.size} IPs across ${subnetSet.size} subnets` },
+          { field: 'Min TTL', value: `${info.minTtl}s`, context: 'Rapid cache expiration' }
+        ],
+        mitigation: 'Correlate against passive DNS history and block corresponding rotating IP addresses.'
       });
-      iocMatches.push({ severity: 'medium', value: domain, type: 'Fast-Flux Rotation' });
+      iocMatches.push({ severity: 'high', value: domain, type: 'Fast-Flux Rotation' });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Heuristic 1d: Phishing Evasion / Cloaking Redirects
+  // -------------------------------------------------------------
+  const httpRedirectRegex = /HTTP\/1\.[01]\s+(30[1278])\s+[^\r\n]*\r\n(?:[^\r\n]+\r\n)*?Location:\s*([^\r\n]+)/gi;
+  let redirMatch;
+  while ((redirMatch = httpRedirectRegex.exec(rawText)) !== null) {
+    const code = redirMatch[1];
+    const loc = redirMatch[2].trim();
+    const searchBefore = rawText.substring(Math.max(0, redirMatch.index - 500), redirMatch.index);
+    const prevHostMatch = searchBefore.match(/Host:\s*([a-zA-Z0-9.-]+)/i);
+    const host = prevHostMatch ? prevHostMatch[1] : 'unknown';
+
+    if (!isKnownBenignRoot(host) && !findBrandForRoot(host)) {
+      const cloakingTargets = ['amazon.com', 'google.com', 'microsoft.com', 'bing.com', 'apple.com'];
+      const isCloaking = cloakingTargets.some(t => loc.toLowerCase().includes(t));
+
+      if (isCloaking) {
+        threatScore += 65;
+        findings.push({
+          title: 'Phishing Evasion / Sandbox Cloaking Redirect Observed',
+          description: `Host '${host}' issued an HTTP ${code} redirect to '${loc}'. Adversaries use defensive evasion to bounce non-victim traffic and sandbox engines to trusted platforms.`,
+          severity: 'high',
+          evidence: [
+            { field: 'Phishing Host', value: host, context: 'Originating Server' },
+            { field: 'Redirect Target', value: loc, context: 'Cloaking Destination' }
+          ],
+          mitigation: 'Analyze the full URL query parameters required to trigger the actual credential harvesting page.'
+        });
+        iocMatches.push({ severity: 'high', value: `${host} -> ${loc}`, type: 'Cloaking Redirect' });
+      }
     }
   }
 
@@ -757,9 +805,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 3: PowerShell Staging & Malware Payloads
+  // Heuristic 3: PowerShell Staging & Malware Payloads (Hardened)
   // -------------------------------------------------------------
-  const isPowerShellFlow = /WindowsPowerShell/i.test(rawText) || /(?:Net\.WebClient|DownloadString|invoke-expression|iex\s*\(|-[eE](?:nc(?:odedcommand)?)?)/i.test(rawText);
+  const isPowerShellFlow =
+    /powershell(?:\.exe)?\s+.*?(?:-[eE](?:nc(?:odedcommand)?)?|-nop|-w\s+hidden)/i.test(rawText) ||
+    /(?:Invoke-Expression|iex)\s*[\(\s]+(?:New-Object|Net\.WebClient|\[System\.)/i.test(rawText) ||
+    /Net\.WebClient\s*\)\s*\.Download(?:String|File|Data)\s*\(/i.test(rawText) ||
+    /User-Agent:\s*WindowsPowerShell/i.test(rawText);
+
   if (isPowerShellFlow) {
     threatScore += 75;
     findings.push({
@@ -789,18 +842,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
 
   // -------------------------------------------------------------
   // Heuristic 4: Contextual Threat Intelligence Lookups
-  //
-  // Candidate domains sent out to third-party sandbox/reputation
-  // APIs are filtered through the same benign allowlist so verified
-  // infrastructure never burns API quota or risks a bad verdict.
   // -------------------------------------------------------------
   const candidateDomains = Object.keys(domainCounts)
     .filter(d => !findBrandForRoot(d))
     .filter(d => !isKnownBenignRoot(d))
     .sort((a, b) => {
-      const suspiciousPattern = /(?:ddos|bot|c2|payload|loader|\.top$|\.xyz$|\.ru$|\.site$)/i;
-      const aScore = (suspiciousPattern.test(a) ? 20 : 0) + (domainCounts[a] || 0);
-      const bScore = (suspiciousPattern.test(b) ? 20 : 0) + (domainCounts[b] || 0);
+      const suspiciousPattern = /(?:flsenate|senate|login|auth|portal|verify|rooflng|titan|c2|payload|update)/i;
+      const aScore = (suspiciousPattern.test(a) ? 100 : 0) + (domainCounts[a] || 0);
+      const bScore = (suspiciousPattern.test(b) ? 100 : 0) + (domainCounts[b] || 0);
       return bScore - aScore;
     })
     .slice(0, 3);
@@ -914,7 +963,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     iocMetadata: {
       lookalikeDomains,
       suspiciousSNIs: tlsSessions.filter(s => s.isSuspicious).map(s => s.sni),
-      redirectChains: httpFlows.filter(h => h.location).map(h => `${h.host} -> ${h.location}`),
+      redirectChains: findings.filter(f => f.title.includes('Cloaking Redirect')).map(f => f.description),
       loginPOSTs: httpFlows.filter(h => h.method === 'POST').map(h => `POST ${h.path}`),
       iocMatches
     }
