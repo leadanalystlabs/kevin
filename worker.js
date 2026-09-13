@@ -21,14 +21,16 @@ const TARGET_BRANDS = [
       'msftstatic.com', 'msauth.net', 'msftauth.net', 'msftauthimages.net',
       'msauthimages.net', 'msidentity.com', 'msecnd.net', 'msn.com',
       'azureedge.net', 'azurefd.net', 'bing.com', 'skype.com', 'yammer.com',
-      'trafficmanager.net'
+      'trafficmanager.net', 'windowsupdate.com', 'microsoft-tst.com' // Added common benign MS domains
     ],
-    regex: /(?:^|\.)(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)(?:\.|$)/i
+    // Tightened Regex: Require a delimiter (-, ., or start of string) before the spoofed name,
+    // and a literal dot after to reduce partial word matches.
+    regex: /(?:^|[-.])(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)\./i
   },
   {
     name: 'Okta',
     legitSuffixes: ['okta.com', 'oktapreview.com', 'oktacdn.com', 'okta-emea.com', 'trexcloud.com'],
-    regex: /(?:^|\.)(?:login[-.]?)?(?:okta[-_.]auth|okta[-_.]login|0kta)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:login[-.]?)?(?:okta[-_.]auth|okta[-_.]login|0kta)\./i
   },
   {
     name: 'Google',
@@ -37,29 +39,29 @@ const TARGET_BRANDS = [
       'googleusercontent.com', 'googlesyndication.com', 'googleadservices.com',
       'googletagmanager.com', 'google-analytics.com', 'doubleclick.net',
       'youtube.com', 'ytimg.com', 'ggpht.com', 'gvt1.com', 'gvt2.com',
-      'goo.gl', 'googlemail.com', 'workspace.google.com'
+      'goo.gl', 'googlemail.com', 'workspace.google.com', 'android.com', 'withgoogle.com'
     ],
-    regex: /(?:^|\.)(?:g00gle|accounts[-_.]google|gmail[-_.]auth)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:g00gle|accounts[-_.]google|gmail[-_.]auth)\./i
   },
   {
     name: 'DocuSign',
     legitSuffixes: ['docusign.com', 'docusign.net'],
-    regex: /(?:^|\.)(?:docus[i1l]gn|d0cusign|docu[-_]?sign)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:docus[i1l]gn|d0cusign|docu[-_]?sign)\./i
   },
   {
     name: 'PayPal',
     legitSuffixes: ['paypal.com', 'paypal-communication.com', 'paypalobjects.com'],
-    regex: /(?:^|\.)(?:paypa[l1]|p4ypal|pay[-_]?pal)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:paypa[l1]|p4ypal|pay[-_]?pal)\./i
   },
   {
     name: 'Apple',
     legitSuffixes: ['apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com', 'cdn-apple.com'],
-    regex: /(?:^|\.)(?:apple[-_]?id|icl0ud|apple[-_]?auth)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:apple[-_]?id|icl0ud|apple[-_]?auth)\./i
   },
   {
     name: 'Adobe',
     legitSuffixes: ['adobe.com', 'adobelogin.com', 'adobeioruntime.net'],
-    regex: /(?:^|\.)(?:ad0be|adobe[-_.]login)(?:\.|$)/i
+    regex: /(?:^|[-.])(?:ad0be|adobe[-_.]login)\./i
   }
 ];
 
@@ -74,7 +76,8 @@ const GLOBAL_BENIGN_ROOTS = [
   'fontawesome.com', 'google-analytics.com', 'googletagmanager.com',
   'akamai.net', 'akamaiedge.net', 'akadns.net', 'akamaized.net', 'edgekey.net',
   'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
-  'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com'
+  'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com',
+  'googleapis.com', 'gstatic.com', 'gvt1.com', 'gvt2.com' // Explicitly added Google infra
 ];
 
 const EXTENDED_BENIGN_ROOTS = [
@@ -89,7 +92,7 @@ const EXTENDED_BENIGN_ROOTS = [
   'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
   // Repositories & Hosting
   'github.io', 'githubusercontent.com', 'github.com', 'netlify.app', 'vercel.app',
-  'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com',
+  'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com', 'git.io',
   // Enterprise Productivity / Collaboration
   'salesforce.com', 'force.com', 'zendesk.com', 'hubspot.com', 'mailchimp.com',
   'sendgrid.net', 'twilio.com', 'zoom.us', 'slack.com', 'atlassian.net',
@@ -98,9 +101,12 @@ const EXTENDED_BENIGN_ROOTS = [
   // OS & Application Telemetry
   'msedge.net', 'crashlytics.com', 'app-measurement.com', 'firebaseio.com',
   'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com',
+  'telemetry.microsoft.com', 'vortex.data.microsoft.com', // Added MS telemetry
   // Ad Networks & Attribution
   'adnxs.com', 'rubiconproject.com', 'casalemedia.com', 'pubmatic.com',
-  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net', 'yahoo.com'
+  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net', 'yahoo.com',
+  // Educational / Gov (Reduce false positives on generic lures)
+  'edu', 'gov', 'mil'
 ];
 
 const BENIGN_ROOTS_SET = new Set([...GLOBAL_BENIGN_ROOTS, ...EXTENDED_BENIGN_ROOTS]);
@@ -124,6 +130,8 @@ function walkSuffixes(domain) {
 function isKnownBenignRoot(domain) {
   for (const suffix of walkSuffixes(domain)) {
     if (BENIGN_ROOTS_SET.has(suffix)) return true;
+    // Fast path for TLDs like .edu or .gov that might be flagged as lures incorrectly
+    if (BENIGN_ROOTS_SET.has(domain.split('.').pop())) return true;
   }
   return false;
 }
@@ -136,7 +144,7 @@ function findBrandForRoot(domain) {
 }
 
 // -------------------------------------------------------------
-// Packet Parsing Helpers
+// Packet Parsing Helpers (Remains mostly unchanged)
 // -------------------------------------------------------------
 const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
@@ -462,7 +470,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const dnsDomainInfo = new Map();
 
   const registerDnsDomain = (name, ip, ttl) => {
-    const clean = (name || '').replace(/\.$/, '');
+    const clean = (name || '').replace(/\.$/, '').toLowerCase();
     if (clean.length < 4) return;
     if (!dnsDomainInfo.has(clean)) {
       dnsDomainInfo.set(clean, { ips: new Set(), minTtl: null, queryCount: 0, answered: false });
@@ -514,9 +522,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
   }
 
-  // -------------------------------------------------------------
-  // High-Fidelity HTTP Flow & AiTM Application Inspection
-  // -------------------------------------------------------------
+  // Extract HTTP Methods & Paths (Strict Login matching bounded by word boundaries to avoid 'Authority' false positives)
   const httpFlows = [];
   const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
@@ -524,10 +530,9 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const method = httpMatch[1];
     const path = httpMatch[2];
     
-    // Strict boundaries ensure CRL endpoints (e.g. Certificate Authority) are not falsely flagged
-    const isLogin = /(?:login|signin|password|session|oauth|credential|\bauth\b|\btoken\b)/i.test(path);
+    // Tightened login regex to require word boundaries or slashes
+    const isLogin = /(?:\/|\b)(?:login|signin|password|session|oauth|credential|auth|token)(?:\/|\b|\?)/i.test(path);
 
-    // Bound the header search to the immediate HTTP block
     const headerBlock = rawText.substring(httpMatch.index, Math.min(httpMatch.index + 1500, rawText.length));
     const hostMatch = headerBlock.match(/^Host:\s*([a-zA-Z0-9.-]+)/im);
     const flowHost = hostMatch ? hostMatch[1].toLowerCase() : (Object.keys(domainCounts)[0] || 'unknown');
@@ -535,11 +540,11 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const cookieMatch = headerBlock.match(/^(?:Set-Cookie|Cookie):\s*([^\r\n]+)/im);
     const hasIdpCookie = cookieMatch ? /ESTSAUTH|ESTSAUTHPERSISTENT|OSID|session_token/i.test(cookieMatch[1]) : false;
 
-    // Detect AiTM URI proxying configurations (Evilginx / Tycoon / NakedPages)
+    // Detect Identity Provider URIs being proxied (Evilginx / Tycoon / NakedPages)
     let proxyTarget = null;
-    if (/^\/(?:common\/oauth2|login\.srf|kmsi|getcredentialtype|me\.htm|adfs\/ls)/i.test(path)) proxyTarget = 'Microsoft';
-    else if (/^\/(?:accountchooser|signin\/v[23]\/challenge|ServiceLogin)/i.test(path)) proxyTarget = 'Google';
-    else if (/^\/(?:api\/v1\/authn|login\/login\.htm|login\/step-up)/i.test(path)) proxyTarget = 'Okta';
+    if (/\/(?:common\/oauth2|login\.srf|kmsi|getcredentialtype|me\.htm|adfs\/ls)/i.test(path)) proxyTarget = 'Microsoft';
+    else if (/\/(?:accountchooser|signin\/v[23]\/challenge|ServiceLogin)/i.test(path)) proxyTarget = 'Google';
+    else if (/\/(?:api\/v1\/authn|login\/login\.htm)/i.test(path)) proxyTarget = 'Okta';
 
     httpFlows.push({
       method,
@@ -588,7 +593,8 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   for (const flow of httpFlows) {
     if (findBrandForRoot(flow.host) || isKnownBenignRoot(flow.host)) continue;
 
-    if (flow.proxyTarget && !aitmDomains.has(flow.host)) {
+    // Added check to ensure the domain actually exists in DNS or text before flagging as AiTM
+    if (flow.proxyTarget && !aitmDomains.has(flow.host) && domainCounts[flow.host]) {
       threatScore += 90;
       aitmDomains.add(flow.host);
       findings.push({
@@ -604,7 +610,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       iocMatches.push({ severity: 'critical', value: flow.host, type: 'AiTM Phishing Proxy' });
     }
 
-    if (flow.hasIdpCookie && !aitmDomains.has(flow.host + '_cookie')) {
+    if (flow.hasIdpCookie && !aitmDomains.has(flow.host + '_cookie') && domainCounts[flow.host]) {
       threatScore += 100;
       aitmDomains.add(flow.host + '_cookie');
       findings.push({
@@ -622,12 +628,46 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1b: Brand Impersonation / Lookalike Domains (Fallback)
+  // Heuristic 1b: PhaaS Anti-Bot Gateways (Tycoon 2FA)
+  // -------------------------------------------------------------
+  const hasTurnstile = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
+  const hasCdnCgi = /cdn-cgi\/challenge-platform/i.test(rawText);
+  
+  if (hasTurnstile || hasCdnCgi) {
+    const unverifiedHosts = Object.keys(domainCounts).filter(d => !findBrandForRoot(d) && !isKnownBenignRoot(d) && !d.includes('cloudflare'));
+    // Only flag if we have high confidence in the unverified host (e.g., seen in DNS)
+    const primarySuspect = unverifiedHosts.find(d => dnsDomainInfo.has(d));
+    if (primarySuspect) {
+      threatScore += 80;
+      findings.push({
+        title: 'PhaaS Anti-Bot Gateway Detected (Tycoon 2FA / AiTM)',
+        description: 'Observed Cloudflare Turnstile or Challenge-Platform execution originating from unverified infrastructure. AiTM phishing kits heavily rely on these gateways to evade security sandboxes before displaying the proxy page.',
+        severity: 'critical',
+        evidence: [
+          { field: 'Gateway Signature', value: 'Cloudflare Turnstile / Challenge', context: 'Anti-Analysis Gate' },
+          { field: 'Suspicious Origin', value: primarySuspect, context: 'Unverified proxy host' }
+        ],
+        mitigation: 'Block domain immediately on edge firewalls. Investigate users who visited this domain for session token theft.'
+      });
+      iocMatches.push({ severity: 'critical', value: primarySuspect, type: 'PhaaS Anti-Bot Gate' });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Heuristic 1c: Brand Impersonation, Typosquatting & Institutional Lures
   // -------------------------------------------------------------
   const CDN_DISTRIBUTION_SUFFIXES = [
     'cdn.cloudflare.net', 'akamaiedge.net', 'edgekey.net', 'trafficmanager.net',
     'azureedge.net', 'azurefd.net', 'cloudfront.net', 'fastly.net'
   ];
+
+  // Refined Institutional Lure Regex: Require domain word boundaries and common generic TLDs
+  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)(?:[a-z]{2}-?)?(?:senate|house|assembly|congress|legislature|judiciary|uscourts|court|police|sheriff|taxes|revenue|benefits|unemployment|payroll|humanresources|hr-portal|sso|mfa|auth|verify|secure)\.(?:com|net|org|xyz|site|top|ru)$/i;
+  
+  // Refined phonetic regex to avoid matching legit domains containing "info" or similar strings arbitrarily
+  const PHONETIC_HOMOGLYPH_REGEX = /(?:^|[-.])[a-z0-9-]{3,}l(?:ng|ngs)\./i; 
+  // Stricter brand spoof regex
+  const BRAND_SPOOF_REGEX = /(?:^|[-.])(?:micros[o0]ft|0ffice|g00gle|amaz[o0]n|paypa[l1]|d0cusign|1nkedin)\./i;
 
   for (const [domain, count] of Object.entries(domainCounts)) {
     let brandDetected = null;
@@ -655,23 +695,49 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       }
 
       if (!verified && !aitmDomains.has(domain)) {
+        // Evaluate Official Brand Regexes
         for (const brand of TARGET_BRANDS) {
           if (brand.regex.test(domain)) {
-            brandDetected = brand.name;
-            isLookalike = true;
-            lookalikeDomains.push(domain);
-            threatScore += 45;
+            // Additional check: Don't flag if it's a known benign root even if it matches a lookalike pattern
+            if (!isKnownBenignRoot(domain)) {
+              brandDetected = brand.name;
+              isLookalike = true;
+              lookalikeDomains.push(domain);
+              threatScore += 45;
+              findings.push({
+                title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
+                description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
+                severity: 'critical',
+                evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
+                mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
+              });
+              iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
+              break;
+            }
+          }
+        }
+
+        // Evaluate Institutional Lures & Typosquatting
+        if (!isLookalike && !isKnownBenignRoot(domain)) {
+          const isGovLure = INSTITUTIONAL_LURE_REGEX.test(domain) && !domain.endsWith('.gov') && !domain.endsWith('.mil') && !domain.endsWith('.us') && !domain.endsWith('.edu');
+          const isTyposquat = PHONETIC_HOMOGLYPH_REGEX.test(domain) || BRAND_SPOOF_REGEX.test(domain);
+
+          if (isGovLure || isTyposquat) {
+            threatScore += 80;
+            const lureMatch = domain.match(INSTITUTIONAL_LURE_REGEX);
+            const lureName = lureMatch ? lureMatch[0].replace(/^\.|\.$/g, '').toUpperCase() : 'ORGANIZATIONAL';
 
             findings.push({
-              title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
-              description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
+              title: isGovLure ? `Targeted Institutional Lure (${lureName} Impersonation)` : `Typosquatted Phishing Domain (${domain})`,
+              description: isGovLure ? `Observed high-risk subdomain '${domain}' mimicking official legislative/institutional infrastructure on an unverified commercial domain.` : `Observed domain '${domain}' utilizing character substitution/homoglyphs (e.g. 'l' for 'i') to deceive users.`,
               severity: 'critical',
-              evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
-              mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
+              evidence: [
+                { field: 'Domain', value: domain, context: isGovLure ? 'Institutional Spear-Phishing Lure' : 'Homoglyph Typosquatting' },
+                { field: 'Queries Observed', value: String(count), context: 'Active Network Artifact' }
+              ],
+              mitigation: 'Block domain immediately at edge firewalls. Reset credentials for users visiting this infrastructure.'
             });
-
-            iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
-            break;
+            iocMatches.push({ severity: 'critical', value: domain, type: isGovLure ? 'Institutional Phishing Lure' : 'Typosquatted Domain' });
           }
         }
       }
@@ -680,9 +746,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const dnsInfo = dnsDomainInfo.get(domain);
     domains.push({
       domain,
-      ips: dnsInfo && dnsInfo.ips.size > 0
-        ? Array.from(dnsInfo.ips)
-        : ['198.51.100.' + (Math.floor(Math.random() * 200) + 1)],
+      ips: dnsInfo && dnsInfo.ips.size > 0 ? Array.from(dnsInfo.ips) : ['198.51.100.' + (Math.floor(Math.random() * 200) + 1)],
       queryCount: count,
       brand: brandDetected,
       isLookalike,
@@ -693,7 +757,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1c: Algorithmic Fast-Flux Detection (Anycast Independent)
+  // Heuristic 1d: Algorithmic Fast-Flux Detection (Anycast Independent)
   // -------------------------------------------------------------
   for (const [domain, info] of dnsDomainInfo.entries()) {
     if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
@@ -701,7 +765,8 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const ipv4Only = [...info.ips].filter(ip => ip.includes('.'));
     const subnetSet = new Set(ipv4Only.map(ip => ip.split('.').slice(0, 2).join('.')));
 
-    if (info.ips.size >= 4 && subnetSet.size >= 3 && info.minTtl !== null && info.minTtl <= 60) {
+    // Increased strictness for Fast-Flux: Require more IPs and Subnets to reduce FP from legitimate CDNs not in list
+    if (info.ips.size >= 6 && subnetSet.size >= 4 && info.minTtl !== null && info.minTtl <= 60) {
       threatScore += 40;
       findings.push({
         title: 'Fast-Flux / Botnet DNS Rotation Detected',
@@ -718,7 +783,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   }
 
   // -------------------------------------------------------------
-  // Heuristic 1d: Anti-Analysis Sandbox Cloaking & Open Redirects
+  // Heuristic 1e: Anti-Analysis Sandbox Cloaking & Open Redirects
   // -------------------------------------------------------------
   const httpRedirectRegex = /HTTP\/1\.[01]\s+(30[1278])\s+[^\r\n]*\r\n(?:[^\r\n]+\r\n)*?Location:\s*([^\r\n]+)/gi;
   let redirMatch;
@@ -727,11 +792,22 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const loc = redirMatch[2].trim();
     const searchBefore = rawText.substring(Math.max(0, redirMatch.index - 500), redirMatch.index);
     const prevHostMatch = searchBefore.match(/Host:\s*([a-zA-Z0-9.-]+)/i);
-    const host = prevHostMatch ? prevHostMatch[1] : 'unknown';
+    const host = prevHostMatch ? prevHostMatch[1].toLowerCase() : 'unknown';
 
-    if (!isKnownBenignRoot(host) && !findBrandForRoot(host)) {
+    // Stricter check: ensure the redirecting host isn't benign AND is present in our domain list
+    if (host !== 'unknown' && !isKnownBenignRoot(host) && !findBrandForRoot(host) && domainCounts[host]) {
       const cloakingPlatforms = ['amazon.com', 'google.com', 'microsoft.com', 'bing.com', 'apple.com', 'wikipedia.org', 'yahoo.com'];
-      const isCloaking = cloakingPlatforms.some(t => loc.toLowerCase().includes(t));
+      
+      // Ensure we are parsing a URL before matching
+      let redirectTargetHost = loc;
+      try {
+        const urlObj = new URL(loc.startsWith('http') ? loc : `http://${loc}`);
+        redirectTargetHost = urlObj.hostname;
+      } catch (e) {
+          // ignore parsing error, stick with raw string
+      }
+
+      const isCloaking = cloakingPlatforms.some(t => redirectTargetHost.toLowerCase().includes(t));
 
       if (isCloaking) {
         threatScore += 65;
@@ -748,32 +824,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         iocMatches.push({ severity: 'high', value: `${host} -> ${loc}`, type: 'Cloaking Redirect' });
       }
     }
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 2: ClearFake / ClickFix Social Engineering Lures
-  // -------------------------------------------------------------
-  const hasClearFakeCdnCgi = /cdn-cgi\/challenge-platform\/[^\s"']+/i.test(rawText);
-  const hasTurnstileScript = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
-  const hasClipboardWrite = /clipboard(?:\.writeText|\.write)/i.test(rawText);
-
-  const compromisedCandidate = Object.keys(domainCounts).find(d =>
-    !findBrandForRoot(d) && !isKnownBenignRoot(d)
-  ) || 'External Origin';
-
-  if (hasClearFakeCdnCgi || (hasTurnstileScript && hasClipboardWrite)) {
-    threatScore += 80;
-    findings.push({
-      title: 'ClearFake / ClickFix Social Engineering Attack',
-      description: 'Detected network signatures matching fake Cloudflare verification lures used to deliver malware via clipboard command injection.',
-      severity: 'critical',
-      evidence: [
-        { field: 'Pattern', value: 'Fake Cloudflare Challenge-Platform Injection', context: 'ClickFix Social Engineering' },
-        { field: 'Origin Host', value: compromisedCandidate, context: 'Compromised Lure Origin' }
-      ],
-      mitigation: 'Block domain immediately on edge firewalls. Inspect endpoints for clipboard hijacking and PowerShell process creation.'
-    });
-    iocMatches.push({ severity: 'critical', value: `${compromisedCandidate} (ClearFake Lure)`, type: 'Social Engineering Exploit' });
   }
 
   // -------------------------------------------------------------
@@ -797,19 +847,23 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     iocMatches.push({ severity: 'critical', value: 'PowerShell Stager', type: 'Malware Delivery' });
   }
 
-  // Detect malicious archive / binary staging over plaintext HTTP
-  const payloadMatch = rawText.match(/GET\s+([^\s]+\.(?:rar|zip|exe|bin|dll|bat|vbs|ps1))\b/i);
+  // Reduced false positives by requiring a space before the filename and ensuring it's not a common static asset request
+  const payloadMatch = rawText.match(/GET\s+(?:\/[^\s]*?)?([a-zA-Z0-9_-]+\.(?:rar|zip|exe|bin|dll|bat|vbs|ps1))(?:\?|\s)/i);
   if (payloadMatch) {
-    threatScore += 85;
     const stagedFile = payloadMatch[1];
-    findings.push({
-      title: 'Malicious Payload / Archive Download Observed',
-      description: `Detected outbound HTTP GET request retrieving unencrypted payload staging file (${stagedFile}).`,
-      severity: 'critical',
-      evidence: [{ field: 'Payload Path', value: stagedFile, context: 'Malware Dropper / Payload Delivery' }],
-      mitigation: 'Block source domain and hash on perimeter security gateways. Terminate associated network sessions.'
-    });
-    iocMatches.push({ severity: 'critical', value: stagedFile, type: 'Payload Download' });
+    
+    // Simple filter to exclude common non-malicious zips (e.g., fonts, update packages)
+    if (!/update|font|driver|installer/i.test(stagedFile)) {
+        threatScore += 85;
+        findings.push({
+        title: 'Malicious Payload / Archive Download Observed',
+        description: `Detected outbound HTTP GET request retrieving unencrypted payload staging file (${stagedFile}).`,
+        severity: 'critical',
+        evidence: [{ field: 'Payload Path', value: stagedFile, context: 'Malware Dropper / Payload Delivery' }],
+        mitigation: 'Block source domain and hash on perimeter security gateways. Terminate associated network sessions.'
+        });
+        iocMatches.push({ severity: 'critical', value: stagedFile, type: 'Payload Download' });
+    }
   }
 
   // -------------------------------------------------------------
@@ -826,17 +880,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     })
     .slice(0, 3);
 
-  // 4a. Recorded Future Tria.ge Sandbox API
   if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
     const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
     const triageResults = await Promise.all(triagePromises);
-
     triageResults.forEach((res, idx) => {
       if (res && res.isMalicious) {
         const flaggedDomain = candidateDomains[idx];
         const malwareLabel = safeUpperString(res.family, safeUpperString(res.tags, 'THREAT_ACTOR'));
         threatScore += 80;
-
         findings.push({
           title: `Sandbox Correlation: ${malwareLabel} Detected (${flaggedDomain})`,
           description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10.`,
@@ -848,23 +899,19 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
           ],
           mitigation: 'Block domain and associated IPs across perimeter firewalls. Quarantine endpoints communicating with this destination.'
         });
-
         iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${malwareLabel})`, type: 'Triage Threat' });
       }
     });
   }
 
-  // 4b. CrowdStrike Falcon / Hybrid Analysis API v2
   if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
     const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
     const haResults = await Promise.all(haPromises);
-
     haResults.forEach((res, idx) => {
       if (res && res.isMalicious) {
         const flaggedDomain = candidateDomains[idx];
         const vxLabel = safeUpperString(res.vxFamily, 'MALWARE');
         threatScore += 75;
-
         findings.push({
           title: `Falcon Sandbox Alert: ${vxLabel} (${flaggedDomain})`,
           description: `CrowdStrike Hybrid Analysis classified this domain as ${res.verdict} with a threat score of ${res.score}/100.`,
@@ -876,17 +923,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
           ],
           mitigation: 'Block domain across perimeter EDR/firewalls. Quarantine internal hosts communicating with this destination.'
         });
-
         iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${vxLabel})`, type: 'Hybrid Analysis C2 Threat' });
       }
     });
   }
 
-  // 4c. Abuse.ch URLhaus API
   if (env && env.ABUSE_CH_API_KEY && candidateDomains.length > 0) {
     const urlhausPromises = candidateDomains.map(d => queryUrlhaus(d, env.ABUSE_CH_API_KEY));
     const urlhausResults = await Promise.all(urlhausPromises);
-
     urlhausResults.forEach((res, idx) => {
       if (res && res.isMalicious) {
         const flaggedDomain = candidateDomains[idx];
@@ -947,44 +991,23 @@ async function queryTriage(domain, apiKey) {
     const query = encodeURIComponent(`domain:${domain}`);
     const response = await fetch(`https://api.tria.ge/v0/search?query=${query}&subset=public&limit=3`, {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Accept': 'application/json'
-      }
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' }
     });
-
     if (!response.ok) return null;
     const data = await response.json();
-
     if (data.data && data.data.length > 0) {
       const sample = data.data[0];
-
       const overviewResp = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
         headers: { 'Authorization': `Bearer ${apiKey}` }
       });
-
       if (overviewResp.ok) {
         const overview = await overviewResp.json();
         const score = overview.analysis ? (overview.analysis.score || 10) : 10;
         const family = overview.analysis ? (overview.analysis.family || null) : null;
         const tags = overview.analysis ? (overview.analysis.tags || []) : [];
-
-        return {
-          isMalicious: score >= 5,
-          score,
-          sampleId: sample.id,
-          family,
-          tags
-        };
+        return { isMalicious: score >= 5, score, sampleId: sample.id, family, tags };
       }
-
-      return {
-        isMalicious: true,
-        score: 10,
-        sampleId: sample.id,
-        family: 'Reported Threat',
-        tags: ['public-detonation']
-      };
+      return { isMalicious: true, score: 10, sampleId: sample.id, family: 'Reported Threat', tags: ['public-detonation'] };
     }
     return null;
   } catch (e) {
@@ -996,28 +1019,21 @@ async function queryHybridAnalysis(domain, apiKey) {
   try {
     const formData = new URLSearchParams();
     formData.append('domain', domain);
-
     const response = await fetch('https://www.hybrid-analysis.com/api/v2/search/terms', {
       method: 'POST',
       headers: {
-        'api-key': apiKey,
-        'user-agent': 'Falcon Sandbox',
-        'accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'api-key': apiKey, 'user-agent': 'Falcon Sandbox',
+        'accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'
       },
       body: formData.toString()
     });
-
     if (!response.ok) return null;
     const data = await response.json();
-
     if (data.result && data.result.length > 0) {
       const topMatch = data.result.reduce((prev, curr) => ((curr.threat_score || 0) > (prev.threat_score || 0) ? curr : prev), data.result[0]);
-
       if (topMatch.verdict === 'malicious' || topMatch.verdict === 'suspicious' || (topMatch.threat_score || 0) >= 60) {
         return {
-          isMalicious: true,
-          score: topMatch.threat_score || 100,
+          isMalicious: true, score: topMatch.threat_score || 100,
           verdict: safeUpperString(topMatch.verdict, 'MALICIOUS'),
           vxFamily: safeUpperString(topMatch.vx_family, 'Threat Indicator'),
           jobId: topMatch.job_id || topMatch.environment_id || 'N/A'
@@ -1034,16 +1050,10 @@ async function queryUrlhaus(domain, apiKey) {
   try {
     const formData = new URLSearchParams();
     formData.append('host', domain);
-
     const response = await fetch('https://urlhaus-api.abuse.ch/v1/host/', {
-      method: 'POST',
-      headers: {
-        'Auth-Key': apiKey,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      method: 'POST', headers: { 'Auth-Key': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: formData.toString()
     });
-
     if (!response.ok) return null;
     const data = await response.json();
     if (data.query_status === 'ok') {
@@ -1060,36 +1070,12 @@ function getDemoReport() {
     success: true,
     result: {
       filename: 'demo_capture.pcap',
-      summary: {
-        threatScore: 88,
-        threatLevel: 'HIGH',
-        findingsCount: 2,
-        criticalCount: 1,
-        highCount: 1,
-        mediumCount: 0,
-        lowCount: 0,
-        totalPackets: 1420,
-        tcpFlows: 14,
-        udpFlows: 6,
-        uniqueDomains: 5,
-        dnsQueriesCount: 18
-      },
-      findings: [
-        {
-          title: 'Adversary-in-the-Middle Reverse Proxy Pattern',
-          description: 'Observed HTTP POST credentials followed by real session cookie relay.',
-          severity: 'critical',
-          evidence: [{ field: 'Host', value: 'login.micros0ft-auth.com', context: 'Domain spoofing login.microsoftonline.com' }],
-          mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant MFA across all accounts.'
-        }
-      ],
-      domains: [
-        { domain: 'login.micros0ft-auth.com', ips: ['198.51.100.24'], queryCount: 12, brand: 'Microsoft', isLookalike: true, verified: false, ttl: '60s' }
-      ],
-      tlsSessions: [],
-      httpFlows: [],
-      flowTimeline: [],
+      summary: { threatScore: 88, threatLevel: 'HIGH', findingsCount: 2, criticalCount: 1, highCount: 1, mediumCount: 0, lowCount: 0, totalPackets: 1420, tcpFlows: 14, udpFlows: 6, uniqueDomains: 5, dnsQueriesCount: 18 },
+      findings: [{ title: 'Adversary-in-the-Middle Reverse Proxy Pattern', description: 'Observed HTTP POST credentials followed by real session cookie relay.', severity: 'critical', evidence: [{ field: 'Host', value: 'login.micros0ft-auth.com', context: 'Domain spoofing login.microsoftonline.com' }], mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant MFA across all accounts.' }],
+      domains: [{ domain: 'login.micros0ft-auth.com', ips: ['198.51.100.24'], queryCount: 12, brand: 'Microsoft', isLookalike: true, verified: false, ttl: '60s' }],
+      tlsSessions: [], httpFlows: [], flowTimeline: [],
       iocMetadata: { lookalikeDomains: ['login.micros0ft-auth.com'], suspiciousSNIs: [], redirectChains: [], loginPOSTs: [], iocMatches: [] }
     }
   };
 }
+```eof
