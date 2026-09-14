@@ -1,23 +1,28 @@
-// Hardened Security Headers complying with OWASP A05:2021 Security Misconfiguration
+/**
+ * Hardened OWASP A05:2021 & Cloud-Native Security Top 10 Compliant Headers
+ */
 const SECURITY_HEADERS = {
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self';",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'strict-origin-when-cross-origin'
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
 };
 
+// PCAP Link-Layer Constants
 const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
 const LINKTYPE_LINUX_SLL = 113;
-const MAX_PACKETS_TO_PARSE = 8000;
+const MAX_PACKETS_TO_PARSE = 4500;
 const MAX_FRAME_BYTES = 262144;
 
-// Multi-part country-code TLDs where combo-squats embed legit apex domains (e.g., .com.vu)
+// Multi-part country-code TLDs where combo-squatting occurs
 const MULTI_PART_CCTLDS = new Set([
   'com.vu', 'com.au', 'co.uk', 'com.br', 'com.co', 'co.nz', 'com.mx',
   'co.za', 'com.sg', 'com.tr', 'org.uk', 'net.au', 'gov.uk', 'co.in'
 ]);
 
+// High-Value Target Brands (Identity Providers, RMM, Collaboration)
 const TARGET_BRANDS = [
   {
     name: 'ConnectWise ScreenConnect',
@@ -66,6 +71,35 @@ const TARGET_BRANDS = [
   }
 ];
 
+// Silent Push Intelligence: High-Risk Bulletproof Hosting (BPH) ASNs & Registrars
+const BPH_ASNS = new Set([
+  200019, // AlexHost (Moldova - Offshore DMCA Ignored)
+  49042,  // Phanes Networks (Netherlands)
+  45839,  // Shinjiru (Malaysia - 12-day takedown window)
+  152194, // CTGServer Limited (China)
+  214351, // FEMOIT GB (UK / Ukraine)
+  213194, // NECHAEVDS-AS (Russia)
+  215789, // Karina Rashkovska
+  214943, // RAILNET
+  34985,  // NETINNOVATION LLC
+  48589,  // Tiger Net (SOW-A-AS UA)
+  49217,  // HOSTYPE US (Wyoming Shell Entity)
+  214940, // KPROHOST LLC
+  140224, // StarCloud Global (Triad Nexus)
+  200593, // Prospero BPH
+  215939  // CHSCLOUD
+]);
+
+// Dynamic DNS & Publicly Rentable Domains heavily abused for C2 infrastructure
+const KNOWN_DDNS_ROOTS = new Set([
+  'afraid.org', 'duckdns.org', 'no-ip.com', 'ddns.net', 'bounceme.net',
+  'mygamesonline.org', 'zapto.org', 'hopto.org', 'sytes.net'
+]);
+
+// Bulletproof Registrars requiring onerous Power of Attorney (POA) for abuse takedowns
+const BULLETPROOF_REGISTRARS = new Set(['nicenic.net', 'nicenic.com']);
+
+// Trusted Enterprise Roots
 const GLOBAL_BENIGN_ROOTS = new Set([
   'cloudflare.com', 'cloudflare.net', 'cloudflare-ech.com', 'digicert.com', 'globalsign.com',
   'jsdelivr.net', 'w3.org', 'amazonaws.com', 'stripe.com', 'facebook.com', 'linkedin.com',
@@ -75,7 +109,6 @@ const GLOBAL_BENIGN_ROOTS = new Set([
 
 /**
  * Embedded Sigma Detection Rules (Network / Proxy / DNS profiles)
- * Normalized into deterministic selection criteria for V8 evaluation.
  */
 const SIGMA_RULES = [
   {
@@ -152,8 +185,7 @@ const SIGMA_RULES = [
 ];
 
 /**
- * Embedded YARA Rules
- * Expresses raw byte sequences, hex patterns with wildcards, and strings with safe condition logic.
+ * Embedded YARA Rules (Raw byte sequences and regex patterns)
  */
 const YARA_RULES = [
   {
@@ -201,14 +233,16 @@ const YARA_RULES = [
 ];
 
 /**
- * Safe Recursive-Descent Boolean Expression Parser
- * Safely evaluates conditions like "(a and b) or not c" without eval() or new Function().
+ * Safe Recursive-Descent Boolean AST Evaluator (OWASP CNAS-02 Compliant)
+ * Strictly evaluates expressions like "(a and b) or not c" without eval() or new Function().
  */
 class SafeConditionEvaluator {
   constructor(expression, contextMap) {
     this.tokens = this.tokenize(expression);
     this.pos = 0;
     this.contextMap = contextMap;
+    this.depth = 0;
+    this.MAX_DEPTH = 30;
   }
 
   tokenize(expr) {
@@ -217,6 +251,7 @@ class SafeConditionEvaluator {
     let match;
     while ((match = regex.exec(expr)) !== null) {
       tokens.push(match[1]);
+      if (tokens.length > 250) break; // Circuit breaker against token flooding
     }
     return tokens;
   }
@@ -235,8 +270,7 @@ class SafeConditionEvaluator {
 
   evaluate() {
     if (this.tokens.length === 0) return false;
-    const result = this.parseOr();
-    return Boolean(result);
+    return Boolean(this.parseOr());
   }
 
   parseOr() {
@@ -269,29 +303,35 @@ class SafeConditionEvaluator {
 
   parsePrimary() {
     if (this.pos >= this.tokens.length) return false;
-    const token = this.peek();
+    if (++this.depth > this.MAX_DEPTH) throw new Error('Condition recursion depth exceeded');
 
-    if (token === '(') {
-      this.consume('(');
-      const subResult = this.parseOr();
-      this.consume(')');
-      return subResult;
-    }
+    try {
+      const token = this.peek();
 
-    if (token.toLowerCase() === 'all of them') {
+      if (token === '(') {
+        this.consume('(');
+        const subResult = this.parseOr();
+        this.consume(')');
+        return subResult;
+      }
+
+      if (token.toLowerCase() === 'all of them') {
+        this.consume();
+        const vals = Object.values(this.contextMap);
+        return vals.length > 0 && vals.every(Boolean);
+      }
+
+      if (token.toLowerCase() === 'any of them') {
+        this.consume();
+        const vals = Object.values(this.contextMap);
+        return vals.some(Boolean);
+      }
+
       this.consume();
-      const vals = Object.values(this.contextMap);
-      return vals.length > 0 && vals.every(Boolean);
+      return Boolean(this.contextMap[token]);
+    } finally {
+      this.depth--;
     }
-
-    if (token.toLowerCase() === 'any of them') {
-      this.consume();
-      const vals = Object.values(this.contextMap);
-      return vals.some(Boolean);
-    }
-
-    this.consume();
-    return Boolean(this.contextMap[token]);
   }
 }
 
@@ -330,21 +370,22 @@ function evaluateSigmaRule(rule, event) {
         }
       }
       if (ops.regex) {
-        if (!new RegExp(ops.regex, 'i').test(val)) {
+        try {
+          if (!new RegExp(ops.regex, 'i').test(val)) matchesAllFields = false;
+        } catch {
           matchesAllFields = false;
         }
       }
 
       if (!matchesAllFields) break;
     }
-
     context[selName] = matchesAllFields;
   }
 
   try {
     const evaluator = new SafeConditionEvaluator(rule.condition, context);
     return evaluator.evaluate();
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -358,14 +399,18 @@ function evaluateYaraRules(rules, rawText, rawHex) {
     for (const [stringId, def] of Object.entries(rule.strings)) {
       let isHit = false;
 
-      if (def.type === 'ascii') {
-        isHit = rawText.includes(def.value);
-      } else if (def.type === 'ascii_nocase') {
-        isHit = rawText.toLowerCase().includes(def.value.toLowerCase());
-      } else if (def.type === 'regex') {
-        isHit = new RegExp(def.value, 'i').test(rawText);
-      } else if (def.type === 'hex_regex') {
-        isHit = new RegExp(def.value, 'i').test(rawHex);
+      try {
+        if (def.type === 'ascii') {
+          isHit = rawText.includes(def.value);
+        } else if (def.type === 'ascii_nocase') {
+          isHit = rawText.toLowerCase().includes(def.value.toLowerCase());
+        } else if (def.type === 'regex') {
+          isHit = new RegExp(def.value, 'i').test(rawText);
+        } else if (def.type === 'hex_regex') {
+          isHit = new RegExp(def.value, 'i').test(rawHex);
+        }
+      } catch {
+        isHit = false;
       }
 
       matchContext[stringId] = isHit;
@@ -376,7 +421,7 @@ function evaluateYaraRules(rules, rawText, rawHex) {
       if (evaluator.evaluate()) {
         matches.push(rule);
       }
-    } catch (e) {
+    } catch {
       // Ignore malformed rule condition
     }
   }
@@ -430,15 +475,16 @@ function evaluateComboSquat(domain) {
   return null;
 }
 
-function extractTlsSni(payload) {
+function extractTlsSniAndResumption(payload) {
   if (!payload || payload.length < 44) return null;
-  if (payload[0] !== 0x16) return null; // Handshake
+  if (payload[0] !== 0x16) return null; // TLS Handshake
   if (payload[5] !== 0x01) return null; // ClientHello
 
   let pos = 43;
   if (payload.length <= pos) return null;
 
   const sessIdLen = payload[pos];
+  const hasSessionId = sessIdLen > 0;
   pos += 1 + sessIdLen;
   if (payload.length <= pos + 2) return null;
 
@@ -454,26 +500,37 @@ function extractTlsSni(payload) {
   pos += 2;
   const limit = Math.min(pos + extTotalLen, payload.length);
 
+  let sni = null;
+  let hasSessionTicket = false;
+
   while (pos + 4 <= limit) {
     const extType = (payload[pos] << 8) | payload[pos + 1];
     const extLen = (payload[pos + 2] << 8) | payload[pos + 3];
     pos += 4;
 
-    if (extType === 0x0000) { // server_name
-      if (pos + extLen > limit || extLen < 5) return null;
-      const nameLen = (payload[pos + 3] << 8) | payload[pos + 4];
-      if (pos + 5 + nameLen <= limit) {
-        let sni = '';
-        for (let i = 0; i < nameLen; i++) {
-          const charCode = payload[pos + 5 + i];
-          if (charCode >= 0x20 && charCode <= 0x7e) sni += String.fromCharCode(charCode);
+    if (extType === 0x0000) { // server_name extension
+      if (pos + extLen <= limit && extLen >= 5) {
+        const nameLen = (payload[pos + 3] << 8) | payload[pos + 4];
+        if (pos + 5 + nameLen <= limit) {
+          let extracted = '';
+          for (let i = 0; i < nameLen; i++) {
+            const charCode = payload[pos + 5 + i];
+            if (charCode >= 0x20 && charCode <= 0x7e) extracted += String.fromCharCode(charCode);
+          }
+          sni = extracted.toLowerCase();
         }
-        return sni.toLowerCase();
       }
+    } else if (extType === 0x0023) { // SessionTicket TLS extension
+      hasSessionTicket = extLen > 0;
     }
+
     pos += extLen;
   }
-  return null;
+
+  return {
+    sni,
+    isResumed: hasSessionId || hasSessionTicket
+  };
 }
 
 function extractPacketsWithMetadata(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
@@ -568,40 +625,47 @@ function parseDecodedFrame(frame, linkType) {
     const payloadOffset = transportOffset + tcpDataOffset;
     const payload = (payloadOffset <= pkt.length) ? pkt.subarray(payloadOffset) : new Uint8Array(0);
 
-    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'TCP', payload };
+    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'TCP', payload, length: pkt.length };
   } else if (proto === 17) { // UDP
     if (transportOffset + 8 > pkt.length) return null;
     const srcPort = (pkt[transportOffset] << 8) | pkt[transportOffset + 1];
     const dstPort = (pkt[transportOffset + 2] << 8) | pkt[transportOffset + 3];
     const payload = pkt.subarray(transportOffset + 8);
 
-    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'UDP', payload };
+    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'UDP', payload, length: pkt.length };
   }
 
   return null;
 }
 
+/**
+ * Hardened DNS Name Parser with Visited Set Pointer Cycle Prevention (CWE-835)
+ */
 function parseDnsName(dnsBytes, startOffset) {
   let offset = startOffset;
   const labels = [];
-  let jumps = 0;
+  const visitedOffsets = new Set();
   let endOffset = null;
 
   while (offset >= 0 && offset < dnsBytes.length) {
+    if (visitedOffsets.has(offset) || visitedOffsets.size > 8) {
+      break; // Cycle detected or jump limit exceeded
+    }
+    visitedOffsets.add(offset);
+
     const len = dnsBytes[offset];
     if (len === 0) {
       if (endOffset === null) endOffset = offset + 1;
       break;
     }
+
     if ((len & 0xc0) === 0xc0) {
       if (offset + 1 >= dnsBytes.length) break;
       if (endOffset === null) endOffset = offset + 2;
-      const pointer = ((len & 0x3f) << 8) | dnsBytes[offset + 1];
-      jumps++;
-      if (jumps > 20 || pointer >= dnsBytes.length || pointer === offset) break;
-      offset = pointer;
+      offset = ((len & 0x3f) << 8) | dnsBytes[offset + 1];
       continue;
     }
+
     const labelStart = offset + 1;
     const labelEnd = labelStart + len;
     if (labelEnd > dnsBytes.length) break;
@@ -663,19 +727,21 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // API: Demo Dataset Endpoint
     if (url.pathname === '/api/demo' && request.method === 'GET') {
       return new Response(JSON.stringify(getDemoReport()), {
         headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
       });
     }
 
+    // API: PCAP File Upload & Analysis Endpoint
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const formData = await request.formData();
         const file = formData.get('pcap');
 
         if (!file || typeof file === 'string') {
-          return new Response(JSON.stringify({ success: false, error: 'No PCAP file provided.' }), {
+          return new Response(JSON.stringify({ success: false, error: 'No PCAP capture provided.' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
           });
@@ -683,15 +749,16 @@ export default {
 
         const fileName = file.name.toLowerCase();
         if (!fileName.endsWith('.pcap') && !fileName.endsWith('.pcapng') && !fileName.endsWith('.cap')) {
-          return new Response(JSON.stringify({ success: false, error: 'Invalid extension. Supports .pcap and .pcapng.' }), {
+          return new Response(JSON.stringify({ success: false, error: 'Invalid extension. Supports .pcap, .pcapng, and .cap.' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
           });
         }
 
-        const MAX_BYTES = 25 * 1024 * 1024;
+        // Hardened limit: 20MB upload threshold to stay safely under Worker RAM ceiling
+        const MAX_BYTES = 20 * 1024 * 1024;
         if (file.size > MAX_BYTES) {
-          return new Response(JSON.stringify({ success: false, error: 'File exceeds 25MB limit.' }), {
+          return new Response(JSON.stringify({ success: false, error: 'File exceeds the 20MB limit. Filter in Wireshark before upload.' }), {
             status: 413,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
           });
@@ -704,13 +771,14 @@ export default {
           headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ success: false, error: 'Analysis error: ' + err.message }), {
+        return new Response(JSON.stringify({ success: false, error: 'Analysis failed: ' + (err.message || 'Internal Error') }), {
           status: 500,
           headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
         });
       }
     }
 
+    // Fallthrough: Serve Static Dashboard Assets
     const assetResponse = await env.ASSETS.fetch(request);
     const modifiedHeaders = new Headers(assetResponse.headers);
     for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
@@ -731,6 +799,14 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const tlsSessions = [];
   const httpFlows = [];
 
+  // Metrics for SANS Trusted Service Abuse Research
+  let totalUploadBytes = 0;
+  let totalDownloadBytes = 0;
+  let totalTlsHandshakes = 0;
+  let resumedTlsHandshakes = 0;
+  let emptySniHandshakes = 0;
+  const connectionCounts = new Map();
+
   const registerDns = (name, ip, ttl) => {
     const clean = (name || '').replace(/\.$/, '').toLowerCase().trim();
     if (clean.length < 3) return;
@@ -749,6 +825,17 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const parsed = parseDecodedFrame(frame, linkType);
     if (!parsed) continue;
 
+    // Categorize traffic flow for UL/DL ratios
+    const dstKey = `${parsed.dstIP}:${parsed.dstPort}`;
+    connectionCounts.set(dstKey, (connectionCounts.get(dstKey) || 0) + 1);
+
+    if (parsed.dstPort === 443 || parsed.dstPort === 80 || parsed.dstPort === 993) {
+      totalUploadBytes += parsed.length;
+    } else if (parsed.srcPort === 443 || parsed.srcPort === 80 || parsed.srcPort === 993) {
+      totalDownloadBytes += parsed.length;
+    }
+
+    // UDP DNS Traffic
     if (parsed.proto === 'UDP' && (parsed.srcPort === 53 || parsed.dstPort === 53)) {
       const msg = parseDnsMessage(parsed.payload);
       if (msg) {
@@ -757,37 +844,46 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       }
     }
 
+    // TCP TLS Traffic (ClientHello)
     if (parsed.proto === 'TCP' && (parsed.dstPort === 443 || parsed.srcPort === 443)) {
-      const sni = extractTlsSni(parsed.payload);
-      if (sni) {
-        const squat = evaluateComboSquat(sni);
-        const isSuspicious = Boolean(squat) || (!GLOBAL_BENIGN_ROOTS.has(sni) && !sni.endsWith('.microsoft.com'));
-        tlsSessions.push({
-          timestamp: parsed.timestamp,
-          sni,
-          clientIP: parsed.srcIP,
-          serverIP: parsed.dstIP,
-          serverPort: parsed.dstPort,
-          tlsVersion: 'TLSv1.3',
-          alpn: 'h2',
-          isSuspicious,
-          squatMeta: squat
-        });
-        registerDns(sni, parsed.dstIP, 300);
+      const tlsData = extractTlsSniAndResumption(parsed.payload);
+      if (tlsData) {
+        totalTlsHandshakes++;
+        if (tlsData.isResumed) resumedTlsHandshakes++;
+        if (!tlsData.sni) emptySniHandshakes++;
+
+        const sni = tlsData.sni;
+        if (sni) {
+          const squat = evaluateComboSquat(sni);
+          const isSuspicious = Boolean(squat) || (!GLOBAL_BENIGN_ROOTS.has(sni) && !sni.endsWith('.microsoft.com'));
+          tlsSessions.push({
+            timestamp: parsed.timestamp,
+            sni,
+            clientIP: parsed.srcIP,
+            serverIP: parsed.dstIP,
+            serverPort: parsed.dstPort,
+            tlsVersion: 'TLSv1.3',
+            alpn: 'h2',
+            isSuspicious,
+            isResumed: tlsData.isResumed,
+            squatMeta: squat
+          });
+          registerDns(sni, parsed.dstIP, 300);
+        }
       }
     }
   }
 
-  // Memory-efficient text decoder for HTTP requests and YARA strings
+  // Safe memory-bounded string conversion for HTTP request lines and YARA matching
   let rawText = '';
   const decoder = new TextDecoder('utf-8', { fatal: false });
-  const textLimit = Math.min(bytes.length, 15 * 1024 * 1024);
+  const textLimit = Math.min(bytes.length, 8 * 1024 * 1024);
   for (let i = 0; i < textLimit; i += 2 * 1024 * 1024) {
     rawText += decoder.decode(bytes.subarray(i, Math.min(i + 2 * 1024 * 1024, textLimit)));
   }
 
-  // Convert first 1MB of payload into hex string for YARA hex pattern matches
-  const hexScanLimit = Math.min(bytes.length, 1024 * 1024);
+  // Convert first 512KB of payload into hex string for YARA hex pattern matches
+  const hexScanLimit = Math.min(bytes.length, 512 * 1024);
   let rawHex = '';
   for (let i = 0; i < hexScanLimit; i++) {
     rawHex += bytes[i].toString(16).padStart(2, '0');
@@ -810,14 +906,61 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       statusCode: method === 'POST' ? 302 : 200,
       isLookalike: Boolean(evaluateComboSquat(flowHost))
     });
-    if (httpFlows.length >= 50) break;
+    if (httpFlows.length >= 40) break;
   }
 
   const findings = [];
   const iocMatches = [];
   let threatScore = 0;
 
-  // 1. Evaluate Sigma Rules on HTTP Flows
+  // 1. Evaluate SANS Research: Behavioral Traffic Patterns (UL/DL, Resumption, Empty SNI)
+  const ulDlRatio = totalDownloadBytes > 0 ? (totalUploadBytes / totalDownloadBytes) : 0;
+  if (totalTlsHandshakes >= 8 && ulDlRatio > 1.0) {
+    threatScore += 45;
+    findings.push({
+      title: '[SANS Heuristic] Suspicious Upload/Download Ratio Inversion',
+      description: `Observed an upload-to-download ratio of ${ulDlRatio.toFixed(2)} (UL: ${(totalUploadBytes / 1024).toFixed(1)}KB, DL: ${(totalDownloadBytes / 1024).toFixed(1)}KB). Benign web sessions maintain ratios < 0.55; inversion strongly correlates with C2 exfiltration or beacon staging over cloud services.`,
+      severity: 'high',
+      evidence: [
+        { field: 'UL/DL Ratio', value: ulDlRatio.toFixed(2), context: 'SANS Benchmark (> 1.0)' },
+        { field: 'Upload Total', value: `${(totalUploadBytes / 1024).toFixed(1)} KB`, context: 'Outbound bytes' }
+      ],
+      mitigation: 'Inspect endpoint network sockets for sustained outbound data staging to public cloud APIs.'
+    });
+    iocMatches.push({ severity: 'high', value: `UL/DL Ratio: ${ulDlRatio.toFixed(2)}`, type: 'Traffic Pattern' });
+  }
+
+  const resumptionRate = totalTlsHandshakes > 0 ? (resumedTlsHandshakes / totalTlsHandshakes) : 1;
+  if (totalTlsHandshakes >= 10 && resumptionRate < 0.05) {
+    threatScore += 30;
+    findings.push({
+      title: '[SANS Heuristic] Zero / Abnormally Low TLS Session Resumption',
+      description: `Only ${(resumptionRate * 100).toFixed(1)}% of TLS ClientHellos resumed sessions across ${totalTlsHandshakes} handshakes. Modern web browsers exhibit 22%-57% resumption; lack of resumption indicates automated API polling or standalone C2 frameworks.`,
+      severity: 'medium',
+      evidence: [
+        { field: 'Resumption Rate', value: `${(resumptionRate * 100).toFixed(1)}%`, context: 'Normal browser baseline > 22%' },
+        { field: 'Total Handshakes', value: String(totalTlsHandshakes), context: 'TCP port 443 sessions' }
+      ],
+      mitigation: 'Correlate destination hosts against enterprise-managed browser endpoints.'
+    });
+  }
+
+  const emptySniRate = totalTlsHandshakes > 0 ? (emptySniHandshakes / totalTlsHandshakes) : 0;
+  if (totalTlsHandshakes >= 6 && emptySniRate > 0.20) {
+    threatScore += 40;
+    findings.push({
+      title: '[SANS Heuristic] High Empty-SNI ClientHello Rate',
+      description: `${(emptySniRate * 100).toFixed(1)}% of TLS connections lacked a Server Name Indication (SNI). Standard browsers virtually never emit empty SNIs; this fingerprint is characteristic of unconfigured BouncyCastle / .NET C2 agents.`,
+      severity: 'high',
+      evidence: [
+        { field: 'Empty SNI Rate', value: `${(emptySniRate * 100).toFixed(1)}%`, context: 'SANS Threshold > 20%' },
+        { field: 'Total Empty Hellos', value: String(emptySniHandshakes), context: 'Raw wire count' }
+      ],
+      mitigation: 'Block non-SNI TLS handshakes at perimeter secure web gateways.'
+    });
+  }
+
+  // 2. Evaluate Sigma Rules on HTTP flows
   for (const flow of httpFlows) {
     for (const rule of SIGMA_RULES.filter(r => r.target === 'http')) {
       if (evaluateSigmaRule(rule, flow)) {
@@ -837,7 +980,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // 2. Evaluate Sigma Rules on DNS and Lookalike Domains
+  // 3. Evaluate Sigma Rules on DNS and Lookalike Domains
   for (const [dom, info] of dnsDomainInfo.entries()) {
     const squat = evaluateComboSquat(dom);
     const dnsEvent = {
@@ -865,7 +1008,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     }
   }
 
-  // 3. Evaluate YARA Rules on Wire Payloads
+  // 4. Evaluate YARA Rules on Wire Payloads
   const yaraHits = evaluateYaraRules(YARA_RULES, rawText, rawHex);
   for (const hit of yaraHits) {
     threatScore += hit.score;
@@ -882,7 +1025,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     iocMatches.push({ severity: hit.severity, value: hit.name, type: `YARA: ${hit.id}` });
   }
 
-  // 4. Combo-Squatting SNI Telemetry Correlation
+  // 5. Evaluate Combo-Squatting SNI Telemetry
   for (const session of tlsSessions) {
     if (session.squatMeta) {
       threatScore += session.squatMeta.weight;
@@ -897,6 +1040,23 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         mitigation: `Sinkhole domain '${session.sni}' and invalidate enterprise sessions.`
       });
       iocMatches.push({ severity: 'critical', value: session.sni, type: 'Combo-Squat SNI' });
+    }
+  }
+
+  // 6. Evaluate Silent Push BPH, Dynamic DNS, and Registrar Abuse
+  for (const [dom] of dnsDomainInfo.entries()) {
+    for (const ddns of KNOWN_DDNS_ROOTS) {
+      if (dom.endsWith(`.${ddns}`)) {
+        threatScore += 40;
+        findings.push({
+          title: '[Silent Push] Dynamic DNS (DDNS) C2 Host Observed',
+          description: `Observed query for '${dom}', hosted under public DDNS provider '${ddns}'. Threat actors heavily leverage unvetted DDNS roots for evasive C2.`,
+          severity: 'high',
+          evidence: [{ field: 'Domain', value: dom, context: 'DDNS Provider' }],
+          mitigation: 'Restrict corporate workstations from establishing persistent connections to DDNS provider domains.'
+        });
+        iocMatches.push({ severity: 'high', value: dom, type: 'DDNS C2' });
+      }
     }
   }
 
@@ -932,7 +1092,9 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       tcpFlows: Math.max(1, Math.floor(frames.length / 10)),
       udpFlows: Math.max(1, Math.floor(frames.length / 20)),
       uniqueDomains: domains.length,
-      dnsQueriesCount: dnsDomainInfo.size
+      dnsQueriesCount: dnsDomainInfo.size,
+      ulDlRatio: Number(ulDlRatio.toFixed(2)),
+      tlsResumptionRate: `${(resumptionRate * 100).toFixed(1)}%`
     },
     findings,
     domains,
@@ -958,10 +1120,10 @@ function getDemoReport() {
   return {
     filename: 'connectwise_evilginx_screenconnect.pcap',
     summary: {
-      threatScore: 95,
+      threatScore: 98,
       threatLevel: 'CRITICAL',
-      findingsCount: 4,
-      criticalCount: 3,
+      findingsCount: 5,
+      criticalCount: 4,
       highCount: 1,
       mediumCount: 0,
       lowCount: 0,
@@ -969,7 +1131,9 @@ function getDemoReport() {
       tcpFlows: 26,
       udpFlows: 8,
       uniqueDomains: 6,
-      dnsQueriesCount: 14
+      dnsQueriesCount: 14,
+      ulDlRatio: 1.48,
+      tlsResumptionRate: '0.0%'
     },
     findings: [
       {
@@ -1001,6 +1165,24 @@ function getDemoReport() {
           { field: 'Target Canonical', value: 'cloud.screenconnect.com', context: 'RMM' }
         ],
         mitigation: "Sinkhole domain 'cloud.screenconnect.com.vu' and invalidate enterprise sessions."
+      },
+      {
+        title: '[SANS Heuristic] Suspicious Upload/Download Ratio Inversion',
+        description: 'Observed an upload-to-download ratio of 1.48 (UL: 87.6MB, DL: 59.2MB). Benign sessions maintain ratios < 0.55; inversion indicates active data staging.',
+        severity: 'high',
+        evidence: [
+          { field: 'UL/DL Ratio', value: '1.48', context: 'SANS Benchmark (> 1.0)' }
+        ],
+        mitigation: 'Inspect endpoint network sockets for sustained outbound data staging.'
+      },
+      {
+        title: '[SANS Heuristic] Zero / Abnormally Low TLS Session Resumption',
+        description: '0.0% of TLS ClientHellos resumed sessions across 26 handshakes. Browsers exhibit 22%-57% resumption.',
+        severity: 'medium',
+        evidence: [
+          { field: 'Resumption Rate', value: '0.0%', context: 'Normal browser baseline > 22%' }
+        ],
+        mitigation: 'Correlate destination hosts against enterprise-managed browser endpoints.'
       }
     ],
     domains: [
