@@ -120,12 +120,19 @@ function decomposeDomain(domain) {
   };
 }
 
+// Precomputed once at module load (not per-call) — evaluateComboSquat/
+// isDomainBenign run once per unique domain per request, and Object.values/
+// Object.entries allocate a fresh array every time they're called, so
+// hoisting these avoids that churn across a capture with many domains.
+const BRAND_ENTRIES = Object.entries(MONITORED_BRANDS);
+const BRAND_LIST = Object.values(MONITORED_BRANDS);
+
 function isDomainBenign(domain) {
   const clean = domain.toLowerCase().trim();
   for (const root of GLOBAL_BENIGN_ROOTS) {
     if (clean === root || clean.endsWith(`.${root}`) || clean.endsWith(`-${root}`)) return true;
   }
-  for (const brand of Object.values(MONITORED_BRANDS)) {
+  for (const brand of BRAND_LIST) {
     for (const suffix of brand.legitSuffixes) {
       if (clean === suffix || clean.endsWith(`.${suffix}`) || clean.endsWith(`-${suffix}`)) return true;
     }
@@ -133,14 +140,17 @@ function isDomainBenign(domain) {
   return false;
 }
 
-function evaluateComboSquat(domain) {
-  if (!domain || isDomainBenign(domain)) return null;
+// `alreadyKnownBenign` lets callers skip the isDomainBenign() check when
+// they've already computed it (see evalDomain() memoization below).
+function evaluateComboSquat(domain, alreadyKnownBenign) {
+  if (!domain) return null;
+  if (alreadyKnownBenign === undefined ? isDomainBenign(domain) : alreadyKnownBenign) return null;
 
   const clean = domain.toLowerCase().trim();
   const { subdomain, sld, tld } = decomposeDomain(clean);
   const fullPrefix = `${subdomain}.${sld}`.replace(/^\.+|\.+$/g, '');
 
-  for (const [key, brand] of Object.entries(MONITORED_BRANDS)) {
+  for (const [key, brand] of BRAND_ENTRIES) {
     if (brand.legitSuffixes.some(s => clean === s || clean.endsWith(`.${s}`) || clean.endsWith(`-${s}`))) continue;
 
     if (sld === key || fullPrefix.includes(key)) {
@@ -158,12 +168,14 @@ function evaluateComboSquat(domain) {
   return null;
 }
 
+const COS_BUCKET_DIGIT_REGEX = /[0-9]{4,}/;
+
 function evaluateCloudStorageAbuse(domain) {
   const clean = domain.toLowerCase().trim();
   if (clean.includes('.myqcloud.com') || clean.includes('.s3.amazonaws.com') || clean.includes('.blob.core.windows.net')) {
     const parts = clean.split('.');
     const bucket = parts[0];
-    if (bucket.length >= 16 && /[0-9]{4,}/.test(bucket)) {
+    if (bucket.length >= 16 && COS_BUCKET_DIGIT_REGEX.test(bucket)) {
       return {
         provider: clean.includes('myqcloud') ? 'Tencent Cloud Object Storage (COS)' : 'Public Cloud Bucket',
         bucket,
@@ -204,7 +216,8 @@ async function queryTriage(domain, apiKey) {
   try {
     const q = encodeURIComponent(`domain:${domain}`);
     const res = await fetch(`https://api.tria.ge/v0/search?query=${q}&subset=public&limit=3`, {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(ENRICHMENT_FETCH_TIMEOUT_MS)
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -214,7 +227,8 @@ async function queryTriage(domain, apiKey) {
     let score = 6, family = 'Unclassified', tags = ['public-detonation'];
 
     const overviewRes = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(ENRICHMENT_FETCH_TIMEOUT_MS)
     });
     if (overviewRes.ok) {
       const overview = await overviewRes.json();
@@ -241,7 +255,8 @@ async function queryUrlhaus(domain, apiKey) {
     const res = await fetch('https://urlhaus-api.abuse.ch/v1/host/', {
       method: 'POST',
       headers: { 'Auth-Key': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString()
+      body: body.toString(),
+      signal: AbortSignal.timeout(ENRICHMENT_FETCH_TIMEOUT_MS)
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -269,7 +284,8 @@ async function queryHybridAnalysis(domain, apiKey) {
         accept: 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: body.toString()
+      body: body.toString(),
+      signal: AbortSignal.timeout(ENRICHMENT_FETCH_TIMEOUT_MS)
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -327,6 +343,31 @@ const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
 const LINKTYPE_LINUX_SLL = 113;
 
+// Hoisted out of the per-frame loop: regex literals inside a hot loop body
+// get re-evaluated (and in some engines re-allocated) on every iteration.
+// A capture with tens of thousands of frames makes this meaningful.
+const HTTP_REQUEST_LINE_REGEX = /^(GET|POST|HEAD)\s+([^\s]+)\s+HTTP\/1\.[01]/i;
+const HOST_HEADER_REGEX = /^Host:\s*([^\r\n]+)/im;
+const CREDENTIAL_PATH_REGEX = /(?:^|\/|\?|&)(?:login|sign-?in|auth|oauth|token|sso|mfa|verify|password|session|account|billing|invoice|payment|wire[-_]?transfer)(?:\/|\?|&|$)/i;
+const IDP_COOKIE_REGEX = /(?:ESTSAUTH|MSISAuth|session_admin_auth)/i;
+const RELAY_ARTIFACT_REGEX = /\/s\/[a-f0-9]{32,64}(?:\.js|\.png|\.css)?/i;
+
+// Time-box the frame-parsing loop without calling Date.now() on every single
+// frame — that syscall overhead adds up across thousands of iterations under
+// an already-tight CPU budget. Checked every N frames instead.
+const TIME_CHECK_INTERVAL = 32;
+
+// Defensive ceilings so one pathological capture (e.g. DNS-tunneling-style
+// traffic with tens of thousands of distinct subdomains) can't blow up
+// memory/CPU chasing detail that won't fit in the UI anyway.
+const MAX_UNIQUE_DOMAINS = 2000;
+const MAX_DISPLAY_TLS_SESSIONS = 40;
+const MAX_DISPLAY_HTTP_FLOWS = 40;
+
+// Bounds worst-case latency from a slow/unresponsive external API so one
+// enrichment call can't stall the whole analysis.
+const ENRICHMENT_FETCH_TIMEOUT_MS = 4000;
+
 function extractPackets(bytes, startTime) {
   const frames = [];
   let linkType = LINKTYPE_ETHERNET;
@@ -342,9 +383,13 @@ function extractPackets(bytes, startTime) {
     const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
     linkType = view.getUint32(20, littleEndian);
     let offset = 24;
+    let sinceCheck = 0;
 
     while (offset + 16 <= bytes.length) {
-      if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) { truncated = true; break; }
+      if (++sinceCheck >= TIME_CHECK_INTERVAL) {
+        sinceCheck = 0;
+        if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) { truncated = true; break; }
+      }
       const capLen = view.getUint32(offset + 8, littleEndian);
       totalPackets++;
       if (capLen === 0 || capLen > 65535) break;
@@ -358,8 +403,12 @@ function extractPackets(bytes, startTime) {
   // pcapng format
   else if (magic === 0x0a0d0d0a) {
     let offset = 0;
+    let sinceCheck = 0;
     while (offset + 12 <= bytes.length) {
-      if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) { truncated = true; break; }
+      if (++sinceCheck >= TIME_CHECK_INTERVAL) {
+        sinceCheck = 0;
+        if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) { truncated = true; break; }
+      }
       const blockType = view.getUint32(offset, true);
       const blockLen = view.getUint32(offset + 4, true);
       if (blockLen < 12 || offset + blockLen > bytes.length) break;
@@ -541,13 +590,38 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   // it fires for any host that exhibits the pattern, not one hardcoded name.
   const hostSignals = new Map();
 
+  // Per-request memoization: a capture with thousands of packets typically
+  // only touches a few dozen distinct hostnames, but without this cache
+  // evaluateComboSquat/isDomainBenign/evaluateCloudStorageAbuse would re-run
+  // their full brand-list scan for the SAME domain on every single packet
+  // that references it (e.g. hundreds of TLS handshakes to one AiTM host).
+  // This cache is scoped to a single analysis — created fresh per request —
+  // so nothing about it changes existing detection behavior, only its cost.
+  const domainEvalCache = new Map();
+  function evalDomain(domain) {
+    let result = domainEvalCache.get(domain);
+    if (result) return result;
+    const benign = isDomainBenign(domain);
+    result = {
+      benign,
+      squat: benign ? null : evaluateComboSquat(domain, false),
+      cosAbuse: benign ? null : evaluateCloudStorageAbuse(domain)
+    };
+    domainEvalCache.set(domain, result);
+    return result;
+  }
+
   let verifiedEmptySniCount = 0;
   let completedTlsHandshakes = 0;
 
   const decoder = new TextDecoder('utf-8', { fatal: false });
 
+  let framesSinceCheck = 0;
   for (const frame of frames) {
-    if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) break;
+    if (++framesSinceCheck >= TIME_CHECK_INTERVAL) {
+      framesSinceCheck = 0;
+      if (Date.now() - startTime >= CPU_TIME_LIMIT_MS) break;
+    }
 
     let offset = linkType === LINKTYPE_ETHERNET ? 14 : linkType === LINKTYPE_LINUX_SLL ? 16 : 0;
     if (offset >= frame.length) continue;
@@ -587,14 +661,29 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         const dns = parseDnsPayload(dnsPayload);
         if (dns) {
           for (const q of dns.questions) {
-            if (!dnsDomainMap.has(q)) dnsDomainMap.set(q, { queries: 0, ips: new Set(), cnames: new Set(), ttl: null });
-            dnsDomainMap.get(q).queries++;
+            let entry = dnsDomainMap.get(q);
+            if (!entry) {
+              // Cap unique-domain tracking so a pathological capture (DNS
+              // tunneling, massive subdomain fan-out) can't grow this map
+              // without bound. Traffic to domains beyond the cap still
+              // counts toward totals via dnsQueriesCount below; it just
+              // isn't tracked individually for detection/enrichment.
+              if (dnsDomainMap.size >= MAX_UNIQUE_DOMAINS) continue;
+              entry = { queries: 0, ips: new Set(), cnames: new Set(), ttl: null };
+              dnsDomainMap.set(q, entry);
+            }
+            entry.queries++;
           }
           for (const a of dns.answers) {
-            if (!dnsDomainMap.has(a.name)) dnsDomainMap.set(a.name, { queries: 1, ips: new Set(), cnames: new Set(), ttl: a.ttl });
-            if (a.ip) dnsDomainMap.get(a.name).ips.add(a.ip);
-            if (a.cname) dnsDomainMap.get(a.name).cnames.add(a.cname);
-            if (a.ttl) dnsDomainMap.get(a.name).ttl = a.ttl;
+            let entry = dnsDomainMap.get(a.name);
+            if (!entry) {
+              if (dnsDomainMap.size >= MAX_UNIQUE_DOMAINS) continue;
+              entry = { queries: 1, ips: new Set(), cnames: new Set(), ttl: a.ttl };
+              dnsDomainMap.set(a.name, entry);
+            }
+            if (a.ip) entry.ips.add(a.ip);
+            if (a.cname) entry.cnames.add(a.cname);
+            if (a.ttl) entry.ttl = a.ttl;
           }
         }
       }
@@ -618,16 +707,18 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
               completedTlsHandshakes++;
               const sni = extractTlsSni(payload);
               if (sni) {
-                const squat = evaluateComboSquat(sni);
-                tlsSessions.push({
-                  sni,
-                  clientIP: srcIP,
-                  serverIP: dstIP,
-                  serverPort: dstPort,
-                  tlsVersion: 'TLSv1.3',
-                  alpn: 'h2',
-                  isSuspicious: !!squat
-                });
+                const { squat } = evalDomain(sni);
+                if (tlsSessions.length < MAX_DISPLAY_TLS_SESSIONS) {
+                  tlsSessions.push({
+                    sni,
+                    clientIP: srcIP,
+                    serverIP: dstIP,
+                    serverPort: dstPort,
+                    tlsVersion: 'TLSv1.3',
+                    alpn: 'h2',
+                    isSuspicious: !!squat
+                  });
+                }
                 if (squat) {
                   suspiciousSNIs.push(sni);
                   if (!hostSignals.has(sni)) hostSignals.set(sni, new Set());
@@ -643,31 +734,33 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
         // HTTP Requests
         if (payload.length > 10 && (dstPort === 80 || dstPort === 8080 || srcPort === 80 || srcPort === 8080 || dstPort === 443)) {
           const sampleText = decoder.decode(payload.subarray(0, Math.min(payload.length, 1024)));
-          const httpMatch = sampleText.match(/^(GET|POST|HEAD)\s+([^\s]+)\s+HTTP\/1\.[01]/i);
+          const httpMatch = sampleText.match(HTTP_REQUEST_LINE_REGEX);
 
           if (httpMatch) {
             const method = httpMatch[1].toUpperCase();
             const path = httpMatch[2];
-            const hostMatch = sampleText.match(/^Host:\s*([^\r\n]+)/im);
+            const hostMatch = sampleText.match(HOST_HEADER_REGEX);
             const host = hostMatch ? hostMatch[1].trim().toLowerCase() : dstIP;
 
             // Generic credential/financial lure keyword class (T1566/T1656) —
             // deliberately broad rather than matching one literal path string,
             // so it generalizes across campaigns instead of one observed URI.
-            const isLogin = /(?:^|\/|\?|&)(?:login|sign-?in|auth|oauth|token|sso|mfa|verify|password|session|account|billing|invoice|payment|wire[-_]?transfer)(?:\/|\?|&|$)/i.test(path);
-            const hasIdpCookie = /(?:ESTSAUTH|MSISAuth|session_admin_auth)/i.test(sampleText);
-            const hostSquat = evaluateComboSquat(host);
+            const isLogin = CREDENTIAL_PATH_REGEX.test(path);
+            const hasIdpCookie = IDP_COOKIE_REGEX.test(sampleText);
+            const { squat: hostSquat } = evalDomain(host);
 
-            httpFlows.push({
-              method,
-              host,
-              path: path.length > 120 ? path.substring(0, 117) + '...' : path,
-              statusCode: 200,
-              isLogin,
-              hasSetCookie: method === 'POST',
-              hasIdpCookie,
-              proxyTarget: hostSquat ? hostSquat.brand : null
-            });
+            if (httpFlows.length < MAX_DISPLAY_HTTP_FLOWS) {
+              httpFlows.push({
+                method,
+                host,
+                path: path.length > 120 ? path.substring(0, 117) + '...' : path,
+                statusCode: 200,
+                isLogin,
+                hasSetCookie: method === 'POST',
+                hasIdpCookie,
+                proxyTarget: hostSquat ? hostSquat.brand : null
+              });
+            }
 
             if (method === 'POST' && isLogin) loginPOSTs.push(`POST ${host}${path}`);
 
@@ -677,7 +770,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
             // hex script loaders). This is a mid-tier "Tools" artifact on its
             // own — real, but not automatically critical unless it co-occurs
             // with masquerading or a credential/financial lure on the same host.
-            if (/\/s\/[a-f0-9]{32,64}(?:\.js|\.png|\.css)?/i.test(path)) {
+            if (RELAY_ARTIFACT_REGEX.test(path)) {
               hostSignals.get(host).add('relay-artifact');
               threatScore += 25;
               findings.push({
