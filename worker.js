@@ -6,176 +6,504 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin'
 };
 
-// -------------------------------------------------------------
-// Core Target Brands (Expanded to primary AiTM & credential targets)
-// -------------------------------------------------------------
+const LINKTYPE_ETHERNET = 1;
+const LINKTYPE_RAW = 101;
+const LINKTYPE_LINUX_SLL = 113;
+const MAX_PACKETS_TO_PARSE = 8000;
+const MAX_FRAME_BYTES = 262144;
+
+// Multi-part country-code TLDs where combo-squats embed legit apex domains (e.g., .com.vu)
+const MULTI_PART_CCTLDS = new Set([
+  'com.vu', 'com.au', 'co.uk', 'com.br', 'com.co', 'co.nz', 'com.mx',
+  'co.za', 'com.sg', 'com.tr', 'org.uk', 'net.au', 'gov.uk', 'co.in'
+]);
+
 const TARGET_BRANDS = [
   {
-    name: 'Microsoft',
+    name: 'ConnectWise ScreenConnect',
+    category: 'RMM',
+    canonical: 'cloud.screenconnect.com',
+    legitSuffixes: ['screenconnect.com', 'connectwise.com', 'hostedrmm.com', 'connectwise.net'],
+    weight: 45
+  },
+  {
+    name: 'AnyDesk',
+    category: 'RMM',
+    canonical: 'anydesk.com',
+    legitSuffixes: ['anydesk.com', 'anydesk.net'],
+    weight: 40
+  },
+  {
+    name: 'TeamViewer',
+    category: 'RMM',
+    canonical: 'teamviewer.com',
+    legitSuffixes: ['teamviewer.com', 'teamviewer.de'],
+    weight: 40
+  },
+  {
+    name: 'Microsoft 365',
+    category: 'IdP',
+    canonical: 'login.microsoftonline.com',
     legitSuffixes: [
-      'microsoft.com', 'microsoftonline.com', 'microsoftonline-p.com',
-      'microsoftonline-p.net', 'live.com', 'office.com', 'office365.com',
-      'office365.us', 'outlook.com', 'outlook.office.com', 'outlook.office365.com',
-      'onmicrosoft.com', 'microsoft365.com', 'sharepoint.com', 'sharepointonline.com',
-      'azure.com', 'azure.net', 'windows.net', 'windows.com', 'microsoftapp.net',
-      'msftstatic.com', 'msauth.net', 'msftauth.net', 'msftauthimages.net',
-      'msauthimages.net', 'msidentity.com', 'msecnd.net', 'msn.com',
-      'azureedge.net', 'azurefd.net', 'bing.com', 'skype.com', 'yammer.com',
-      'trafficmanager.net', 'windowsupdate.com', 'microsoft-tst.com' // Added common benign MS domains
+      'microsoft.com', 'microsoftonline.com', 'live.com', 'office.com', 'office365.com',
+      'sharepoint.com', 'azure.com', 'windows.net', 'msauth.net', 'msauthimages.net'
     ],
-    // Tightened Regex: Require a delimiter (-, ., or start of string) before the spoofed name,
-    // and a literal dot after to reduce partial word matches.
-    regex: /(?:^|[-.])(?:login[-.]?)?(?:micros[o0]ft|0ffice365|m365|ms[-_]?auth|login[-_]?ms)\./i
+    weight: 45
   },
   {
     name: 'Okta',
-    legitSuffixes: ['okta.com', 'oktapreview.com', 'oktacdn.com', 'okta-emea.com', 'trexcloud.com'],
-    regex: /(?:^|[-.])(?:login[-.]?)?(?:okta[-_.]auth|okta[-_.]login|0kta)\./i
+    category: 'IdP',
+    canonical: 'okta.com',
+    legitSuffixes: ['okta.com', 'oktapreview.com', 'oktacdn.com', 'trexcloud.com'],
+    weight: 40
   },
   {
-    name: 'Google',
-    legitSuffixes: [
-      'google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com',
-      'googleusercontent.com', 'googlesyndication.com', 'googleadservices.com',
-      'googletagmanager.com', 'google-analytics.com', 'doubleclick.net',
-      'youtube.com', 'ytimg.com', 'ggpht.com', 'gvt1.com', 'gvt2.com',
-      'goo.gl', 'googlemail.com', 'workspace.google.com', 'android.com', 'withgoogle.com'
-    ],
-    regex: /(?:^|[-.])(?:g00gle|accounts[-_.]google|gmail[-_.]auth)\./i
-  },
-  {
-    name: 'DocuSign',
-    legitSuffixes: ['docusign.com', 'docusign.net'],
-    regex: /(?:^|[-.])(?:docus[i1l]gn|d0cusign|docu[-_]?sign)\./i
-  },
-  {
-    name: 'PayPal',
-    legitSuffixes: ['paypal.com', 'paypal-communication.com', 'paypalobjects.com'],
-    regex: /(?:^|[-.])(?:paypa[l1]|p4ypal|pay[-_]?pal)\./i
-  },
-  {
-    name: 'Apple',
-    legitSuffixes: ['apple.com', 'icloud.com', 'apple-dns.net', 'mzstatic.com', 'cdn-apple.com'],
-    regex: /(?:^|[-.])(?:apple[-_]?id|icl0ud|apple[-_]?auth)\./i
-  },
-  {
-    name: 'Adobe',
-    legitSuffixes: ['adobe.com', 'adobelogin.com', 'adobeioruntime.net'],
-    regex: /(?:^|[-.])(?:ad0be|adobe[-_.]login)\./i
+    name: 'Google Workspace',
+    category: 'IdP',
+    canonical: 'accounts.google.com',
+    legitSuffixes: ['google.com', 'accounts.google.com', 'gstatic.com', 'googleapis.com'],
+    weight: 35
   }
 ];
 
-// -------------------------------------------------------------
-// Global Benign Roots (CDNs, Cloud Services, Analytics, & Infrastructure)
-// -------------------------------------------------------------
-const GLOBAL_BENIGN_ROOTS = [
-  'cloudflare.com', 'cloudflare.net', 'cloudflare-ech.com', 'cloudflareinsights.com',
-  'digicert.com', 'globalsign.com', 'jsdelivr.net', 'w3.org', 'xmlsoap.org',
-  'amazonaws.com', 'vimeo.com', 'vimeocdn.com', 'stripe.com', 'stripecdn.com',
-  'facebook.com', 'tiktok.com', 'linkedin.com', 'reddit.com', 'twitter.com', 'x.com',
-  'fontawesome.com', 'google-analytics.com', 'googletagmanager.com',
-  'akamai.net', 'akamaiedge.net', 'akadns.net', 'akamaized.net', 'edgekey.net',
-  'scorecardresearch.com', 'app-us1.com', 'clickfunnels.com', 'hcaptcha.com',
-  'mozilla.com', 'mozilla.org', 'mozilla.net', 'fastly.net', 'getpocket.com',
-  'googleapis.com', 'gstatic.com', 'gvt1.com', 'gvt2.com' // Explicitly added Google infra
+const GLOBAL_BENIGN_ROOTS = new Set([
+  'cloudflare.com', 'cloudflare.net', 'cloudflare-ech.com', 'digicert.com', 'globalsign.com',
+  'jsdelivr.net', 'w3.org', 'amazonaws.com', 'stripe.com', 'facebook.com', 'linkedin.com',
+  'twitter.com', 'x.com', 'googleapis.com', 'gstatic.com', 'akamai.net', 'fastly.net',
+  'github.io', 'githubusercontent.com', 'github.com', 'slack.com', 'zoom.us', 'edu', 'gov', 'mil'
+]);
+
+/**
+ * Embedded Sigma Detection Rules (Network / Proxy / DNS profiles)
+ * Normalized into deterministic selection criteria for V8 evaluation.
+ */
+const SIGMA_RULES = [
+  {
+    id: 'SIGMA-NET-001',
+    title: 'Evilginx2 Credential Harvester URI Pattern',
+    severity: 'critical',
+    score: 95,
+    target: 'http',
+    selections: {
+      sel_method: { method: { equals: 'GET' } },
+      sel_path: { path: { regex: '^/s/[a-f0-9]{32,64}(?:\\.(?:js|png|css))?$' } }
+    },
+    condition: 'sel_method and sel_path',
+    mitigation: 'Block domain immediately on perimeter firewalls. Invalidate session tokens for connected accounts.'
+  },
+  {
+    id: 'SIGMA-NET-002',
+    title: 'Phishing Gate & Fake Billing Interception URI',
+    severity: 'high',
+    score: 50,
+    target: 'http',
+    selections: {
+      sel_gate: {
+        path: {
+          contains: [
+            'UpdateAccountBillinginformation',
+            'session_checkpoint',
+            'getcredentialtype',
+            'login.srf?reauth=1'
+          ]
+        }
+      }
+    },
+    condition: 'sel_gate',
+    mitigation: 'Investigate client endpoint browser history for submitted corporate credentials.'
+  },
+  {
+    id: 'SIGMA-NET-003',
+    title: 'Multi-Stage Phishing Redirection Chain (ESP to External Proxy)',
+    severity: 'critical',
+    score: 60,
+    target: 'http',
+    selections: {
+      sel_esp_origin: {
+        host: {
+          contains: [
+            'bnpmail.collaborativeperks.com',
+            'sendinblue.com',
+            'brevo.com',
+            'sendgrid.net',
+            'mandrillapp.com',
+            'mailchimp.com'
+          ]
+        }
+      },
+      sel_status: { statusCode: { equals: 302 } }
+    },
+    condition: 'sel_esp_origin and sel_status',
+    mitigation: 'Quarantine email lure at mail gateway and purge malicious message across tenant.'
+  },
+  {
+    id: 'SIGMA-NET-004',
+    title: 'PhaaS Anti-Bot Evasion Gate (Cloudflare Turnstile Proxy Abuse)',
+    severity: 'critical',
+    score: 75,
+    target: 'dns',
+    selections: {
+      sel_unverified: { isLookalike: { equals: true } },
+      sel_cf_ip: { ip: { startswith: ['104.21.', '172.67.', '104.16.', '104.18.'] } }
+    },
+    condition: 'sel_unverified and sel_cf_ip',
+    mitigation: 'Implement Edge DNS sinkholing for lookalike domain fronting malicious reverse proxies.'
+  }
 ];
 
-const EXTENDED_BENIGN_ROOTS = [
-  // Identity / MFA Providers
-  'duosecurity.com', 'pingidentity.com', 'pingone.com', 'auth0.com', 'onelogin.com',
-  // AWS / Cloud / Anycast Infra
-  'cloudfront.net', 'awsstatic.com', 'elasticbeanstalk.com', 's3.amazonaws.com',
-  'cloudapp.net', 'digitaloceanspaces.com', 'awswaf.com', 'a2z.com', 'amazon.com',
-  'amazon-adsystem.com', 'media-amazon.com', 'ssl-images-amazon.com',
-  // Static Assets & Web CDNs
-  'unpkg.com', 'cdnjs.cloudflare.com', 'bootstrapcdn.com', 'cachefly.net',
-  'cdn77.com', 'stackpathcdn.com', 'gcore.lu',
-  // Repositories & Hosting
-  'github.io', 'githubusercontent.com', 'github.com', 'netlify.app', 'vercel.app',
-  'herokuapp.com', 'wordpress.com', 'wp.com', 'gravatar.com', 'git.io',
-  // Enterprise Productivity / Collaboration
-  'salesforce.com', 'force.com', 'zendesk.com', 'hubspot.com', 'mailchimp.com',
-  'sendgrid.net', 'twilio.com', 'zoom.us', 'slack.com', 'atlassian.net',
-  'atlassian.com', 'dropboxusercontent.com', 'dropbox.com', 'box.com',
-  'workday.com', 'servicenow.com', 'asana.com', 'notion.so', 'figma.com', 'intercom.io',
-  // OS & Application Telemetry
-  'msedge.net', 'crashlytics.com', 'app-measurement.com', 'firebaseio.com',
-  'sentry.io', 'bugsnag.com', 'newrelic.com', 'datadoghq.com',
-  'telemetry.microsoft.com', 'vortex.data.microsoft.com', // Added MS telemetry
-  // Ad Networks & Attribution
-  'adnxs.com', 'rubiconproject.com', 'casalemedia.com', 'pubmatic.com',
-  'openx.net', 'demdex.net', 'semasio.net', 'thisisdax.com', 'fwmrm.net', 'yahoo.com',
-  // Educational / Gov (Reduce false positives on generic lures)
-  'edu', 'gov', 'mil'
+/**
+ * Embedded YARA Rules
+ * Expresses raw byte sequences, hex patterns with wildcards, and strings with safe condition logic.
+ */
+const YARA_RULES = [
+  {
+    id: 'YARA-WIRE-001',
+    name: 'Evilginx2_Dynamic_Script_Loader',
+    severity: 'critical',
+    score: 90,
+    strings: {
+      $token_uri: { type: 'ascii', value: '/s/' },
+      $script_tag: { type: 'ascii', value: '<script' },
+      $hex_pattern: { type: 'hex_regex', value: '2f732f[a-f0-9]{32,64}' } // /s/[hash]
+    },
+    condition: '$hex_pattern or ($token_uri and $script_tag)',
+    mitigation: 'Block origin domain immediately and isolate communicating endpoints.'
+  },
+  {
+    id: 'YARA-WIRE-002',
+    name: 'PowerShell_DownloadCradle_Execution',
+    severity: 'critical',
+    score: 85,
+    strings: {
+      $ps_cmd1: { type: 'ascii_nocase', value: 'Net.WebClient' },
+      $ps_cmd2: { type: 'ascii_nocase', value: 'DownloadString' },
+      $ps_cmd3: { type: 'ascii_nocase', value: 'Invoke-Expression' },
+      $ps_cmd4: { type: 'ascii_nocase', value: 'iex(' },
+      $ps_enc: { type: 'regex', value: '-enc(?:odedcommand)?\\s+[A-Za-z0-9+/=]{20,}' }
+    },
+    condition: '$ps_enc or ($ps_cmd1 and $ps_cmd2) or ($ps_cmd3 and $ps_cmd1) or $ps_cmd4',
+    mitigation: 'Inspect endpoint Sysmon Event ID 1 & 4688 logs for encoded powershell.exe processes.'
+  },
+  {
+    id: 'YARA-WIRE-003',
+    name: 'AiTM_Stolen_Identity_Cookie_Header',
+    severity: 'critical',
+    score: 100,
+    strings: {
+      $estsauth: { type: 'ascii', value: 'ESTSAUTH=' },
+      $estsauthpers: { type: 'ascii', value: 'ESTSAUTHPERSISTENT=' },
+      $osid: { type: 'ascii', value: 'OSID=' },
+      $cookie_hdr: { type: 'ascii_nocase', value: 'Cookie:' }
+    },
+    condition: '$cookie_hdr and ($estsauth or $estsauthpers or $osid)',
+    mitigation: 'Immediately revoke user session tokens via Entra ID / IdP admin console and enforce FIDO2.'
+  }
 ];
 
-const BENIGN_ROOTS_SET = new Set([...GLOBAL_BENIGN_ROOTS, ...EXTENDED_BENIGN_ROOTS]);
+/**
+ * Safe Recursive-Descent Boolean Expression Parser
+ * Safely evaluates conditions like "(a and b) or not c" without eval() or new Function().
+ */
+class SafeConditionEvaluator {
+  constructor(expression, contextMap) {
+    this.tokens = this.tokenize(expression);
+    this.pos = 0;
+    this.contextMap = contextMap;
+  }
 
-const BRAND_ROOT_MAP = new Map();
-for (const brand of TARGET_BRANDS) {
-  for (const suffix of brand.legitSuffixes) {
-    BRAND_ROOT_MAP.set(suffix, brand.name);
+  tokenize(expr) {
+    const regex = /\s*(\(|\)|and|or|not|all of them|any of them|[a-zA-Z0-9_$.-]+)\s*/gi;
+    const tokens = [];
+    let match;
+    while ((match = regex.exec(expr)) !== null) {
+      tokens.push(match[1]);
+    }
+    return tokens;
+  }
+
+  peek() {
+    return this.tokens[this.pos];
+  }
+
+  consume(expected = null) {
+    const token = this.tokens[this.pos++];
+    if (expected && token && token.toLowerCase() !== expected.toLowerCase()) {
+      throw new Error(`Expected '${expected}', got '${token}'`);
+    }
+    return token;
+  }
+
+  evaluate() {
+    if (this.tokens.length === 0) return false;
+    const result = this.parseOr();
+    return Boolean(result);
+  }
+
+  parseOr() {
+    let left = this.parseAnd();
+    while (this.pos < this.tokens.length && this.peek().toLowerCase() === 'or') {
+      this.consume('or');
+      const right = this.parseAnd();
+      left = left || right;
+    }
+    return left;
+  }
+
+  parseAnd() {
+    let left = this.parseNot();
+    while (this.pos < this.tokens.length && this.peek().toLowerCase() === 'and') {
+      this.consume('and');
+      const right = this.parseNot();
+      left = left && right;
+    }
+    return left;
+  }
+
+  parseNot() {
+    if (this.pos < this.tokens.length && this.peek().toLowerCase() === 'not') {
+      this.consume('not');
+      return !this.parseNot();
+    }
+    return this.parsePrimary();
+  }
+
+  parsePrimary() {
+    if (this.pos >= this.tokens.length) return false;
+    const token = this.peek();
+
+    if (token === '(') {
+      this.consume('(');
+      const subResult = this.parseOr();
+      this.consume(')');
+      return subResult;
+    }
+
+    if (token.toLowerCase() === 'all of them') {
+      this.consume();
+      const vals = Object.values(this.contextMap);
+      return vals.length > 0 && vals.every(Boolean);
+    }
+
+    if (token.toLowerCase() === 'any of them') {
+      this.consume();
+      const vals = Object.values(this.contextMap);
+      return vals.some(Boolean);
+    }
+
+    this.consume();
+    return Boolean(this.contextMap[token]);
   }
 }
 
-function walkSuffixes(domain) {
-  const labels = domain.split('.');
-  const suffixes = [];
-  for (let i = 0; i < labels.length - 1; i++) {
-    suffixes.push(labels.slice(i).join('.'));
+function evaluateSigmaRule(rule, event) {
+  const context = {};
+
+  for (const [selName, criteria] of Object.entries(rule.selections)) {
+    let matchesAllFields = true;
+
+    for (const [field, ops] of Object.entries(criteria)) {
+      const val = String(event[field] ?? '');
+
+      if (ops.equals !== undefined) {
+        if (typeof ops.equals === 'boolean') {
+          if (Boolean(event[field]) !== ops.equals) matchesAllFields = false;
+        } else if (val.toLowerCase() !== String(ops.equals).toLowerCase()) {
+          matchesAllFields = false;
+        }
+      }
+      if (ops.contains) {
+        const containsList = Array.isArray(ops.contains) ? ops.contains : [ops.contains];
+        if (!containsList.some(item => val.toLowerCase().includes(item.toLowerCase()))) {
+          matchesAllFields = false;
+        }
+      }
+      if (ops.startswith) {
+        const startsList = Array.isArray(ops.startswith) ? ops.startswith : [ops.startswith];
+        if (!startsList.some(item => val.startsWith(item))) {
+          matchesAllFields = false;
+        }
+      }
+      if (ops.endswith) {
+        const endsList = Array.isArray(ops.endswith) ? ops.endswith : [ops.endswith];
+        if (!endsList.some(item => val.toLowerCase().endsWith(item.toLowerCase()))) {
+          matchesAllFields = false;
+        }
+      }
+      if (ops.regex) {
+        if (!new RegExp(ops.regex, 'i').test(val)) {
+          matchesAllFields = false;
+        }
+      }
+
+      if (!matchesAllFields) break;
+    }
+
+    context[selName] = matchesAllFields;
   }
-  return suffixes;
+
+  try {
+    const evaluator = new SafeConditionEvaluator(rule.condition, context);
+    return evaluator.evaluate();
+  } catch (err) {
+    return false;
+  }
 }
 
-function isKnownBenignRoot(domain) {
-  for (const suffix of walkSuffixes(domain)) {
-    if (BENIGN_ROOTS_SET.has(suffix)) return true;
-    // Fast path for TLDs like .edu or .gov that might be flagged as lures incorrectly
-    if (BENIGN_ROOTS_SET.has(domain.split('.').pop())) return true;
+function evaluateYaraRules(rules, rawText, rawHex) {
+  const matches = [];
+
+  for (const rule of rules) {
+    const matchContext = {};
+
+    for (const [stringId, def] of Object.entries(rule.strings)) {
+      let isHit = false;
+
+      if (def.type === 'ascii') {
+        isHit = rawText.includes(def.value);
+      } else if (def.type === 'ascii_nocase') {
+        isHit = rawText.toLowerCase().includes(def.value.toLowerCase());
+      } else if (def.type === 'regex') {
+        isHit = new RegExp(def.value, 'i').test(rawText);
+      } else if (def.type === 'hex_regex') {
+        isHit = new RegExp(def.value, 'i').test(rawHex);
+      }
+
+      matchContext[stringId] = isHit;
+    }
+
+    try {
+      const evaluator = new SafeConditionEvaluator(rule.condition, matchContext);
+      if (evaluator.evaluate()) {
+        matches.push(rule);
+      }
+    } catch (e) {
+      // Ignore malformed rule condition
+    }
   }
-  return false;
+
+  return matches;
 }
 
-function findBrandForRoot(domain) {
-  for (const suffix of walkSuffixes(domain)) {
-    if (BRAND_ROOT_MAP.has(suffix)) return BRAND_ROOT_MAP.get(suffix);
+function decomposeDomain(domain) {
+  const parts = domain.toLowerCase().trim().replace(/^\.+|\.+$/g, '').split('.');
+  if (parts.length < 2) return { subdomain: '', sld: domain, tld: '' };
+
+  const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (MULTI_PART_CCTLDS.has(lastTwo) && parts.length >= 3) {
+    return {
+      subdomain: parts.slice(0, parts.length - 3).join('.'),
+      sld: parts[parts.length - 3],
+      tld: lastTwo
+    };
+  }
+
+  return {
+    subdomain: parts.slice(0, parts.length - 2).join('.'),
+    sld: parts[parts.length - 2],
+    tld: parts[parts.length - 1]
+  };
+}
+
+function evaluateComboSquat(domain) {
+  const clean = domain.toLowerCase().trim();
+  const { subdomain, sld, tld } = decomposeDomain(clean);
+
+  for (const brand of TARGET_BRANDS) {
+    if (brand.legitSuffixes.some(legit => clean === legit || clean.endsWith(`.${legit}`))) {
+      continue;
+    }
+
+    const brandTokens = [brand.name.toLowerCase().split(' ')[0], ...brand.legitSuffixes.map(s => s.split('.')[0])];
+    for (const token of brandTokens) {
+      if (token.length >= 4 && (sld.includes(token) || subdomain.includes(token))) {
+        const isDangerousTLD = ['vu', 'com.vu', 'top', 'xyz', 'ru', 'buzz', 'work', 'site', 'pw'].includes(tld);
+        return {
+          brand: brand.name,
+          category: brand.category,
+          canonical: brand.canonical,
+          confidence: isDangerousTLD ? 'CRITICAL' : 'HIGH',
+          weight: brand.weight
+        };
+      }
+    }
   }
   return null;
 }
 
-// -------------------------------------------------------------
-// Packet Parsing Helpers (Remains mostly unchanged)
-// -------------------------------------------------------------
-const LINKTYPE_ETHERNET = 1;
-const LINKTYPE_RAW = 101;
-const LINKTYPE_LINUX_SLL = 113;
-const MAX_PACKETS_TO_PARSE = 6000;
-const MAX_FRAME_BYTES = 262144;
+function extractTlsSni(payload) {
+  if (!payload || payload.length < 44) return null;
+  if (payload[0] !== 0x16) return null; // Handshake
+  if (payload[5] !== 0x01) return null; // ClientHello
 
-function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
-  const packets = [];
+  let pos = 43;
+  if (payload.length <= pos) return null;
+
+  const sessIdLen = payload[pos];
+  pos += 1 + sessIdLen;
+  if (payload.length <= pos + 2) return null;
+
+  const cipherLen = (payload[pos] << 8) | payload[pos + 1];
+  pos += 2 + cipherLen;
+  if (payload.length <= pos + 1) return null;
+
+  const compLen = payload[pos];
+  pos += 1 + compLen;
+  if (payload.length <= pos + 2) return null;
+
+  const extTotalLen = (payload[pos] << 8) | payload[pos + 1];
+  pos += 2;
+  const limit = Math.min(pos + extTotalLen, payload.length);
+
+  while (pos + 4 <= limit) {
+    const extType = (payload[pos] << 8) | payload[pos + 1];
+    const extLen = (payload[pos + 2] << 8) | payload[pos + 3];
+    pos += 4;
+
+    if (extType === 0x0000) { // server_name
+      if (pos + extLen > limit || extLen < 5) return null;
+      const nameLen = (payload[pos + 3] << 8) | payload[pos + 4];
+      if (pos + 5 + nameLen <= limit) {
+        let sni = '';
+        for (let i = 0; i < nameLen; i++) {
+          const charCode = payload[pos + 5 + i];
+          if (charCode >= 0x20 && charCode <= 0x7e) sni += String.fromCharCode(charCode);
+        }
+        return sni.toLowerCase();
+      }
+    }
+    pos += extLen;
+  }
+  return null;
+}
+
+function extractPacketsWithMetadata(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
+  const frames = [];
   let linkType = LINKTYPE_ETHERNET;
+  if (bytes.length < 4) return { linkType, frames };
 
-  if (bytes.length < 4) return { linkType, packets };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = view.getUint32(0, false);
 
   if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
     const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
+    const isNano = (magic === 0xa1b23c4d || magic === 0x4d3cb2a1);
     if (bytes.length >= 24) linkType = view.getUint32(20, littleEndian);
     let offset = 24;
-    while (offset + 16 <= bytes.length && packets.length < maxPackets) {
+    while (offset + 16 <= bytes.length && frames.length < maxPackets) {
+      const tsSec = view.getUint32(offset, littleEndian);
+      const tsUsec = view.getUint32(offset + 4, littleEndian);
       const inclLen = view.getUint32(offset + 8, littleEndian);
       if (inclLen === 0 || inclLen > MAX_FRAME_BYTES) break;
       const dataStart = offset + 16;
       if (dataStart + inclLen > bytes.length) break;
-      packets.push(bytes.subarray(dataStart, dataStart + inclLen));
+      const timestamp = tsSec + (isNano ? tsUsec / 1e9 : tsUsec / 1e6);
+      frames.push({ timestamp, data: bytes.subarray(dataStart, dataStart + inclLen) });
       offset = dataStart + inclLen;
     }
   } else if (magic === 0x0a0d0d0a) {
     let offset = 0;
     const interfaceLinkTypes = [];
-    while (offset + 12 <= bytes.length && packets.length < maxPackets) {
+    while (offset + 12 <= bytes.length && frames.length < maxPackets) {
       const blockType = view.getUint32(offset, true);
       const blockLen = view.getUint32(offset + 4, true);
       if (blockLen < 12 || offset + blockLen > bytes.length) break;
@@ -183,16 +511,13 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
       if (blockType === 0x00000001 && offset + 10 <= bytes.length) {
         interfaceLinkTypes.push(view.getUint16(offset + 8, true));
       } else if (blockType === 0x00000006) {
+        const tsHigh = view.getUint32(offset + 12, true);
+        const tsLow = view.getUint32(offset + 16, true);
         const capturedLen = view.getUint32(offset + 20, true);
         const dataStart = offset + 28;
         if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES && dataStart + capturedLen <= bytes.length) {
-          packets.push(bytes.subarray(dataStart, dataStart + capturedLen));
-        }
-      } else if (blockType === 0x00000003) {
-        const dataStart = offset + 12;
-        const capturedLen = Math.min(blockLen - 12, bytes.length - dataStart);
-        if (capturedLen > 0 && capturedLen <= MAX_FRAME_BYTES) {
-          packets.push(bytes.subarray(dataStart, dataStart + capturedLen));
+          const timestamp = ((tsHigh * 4294967296) + tsLow) / 1e6;
+          frames.push({ timestamp, data: bytes.subarray(dataStart, dataStart + capturedLen) });
         }
       }
       offset += blockLen;
@@ -200,7 +525,60 @@ function extractPackets(bytes, maxPackets = MAX_PACKETS_TO_PARSE) {
     if (interfaceLinkTypes.length > 0) linkType = interfaceLinkTypes[0];
   }
 
-  return { linkType, packets };
+  return { linkType, frames };
+}
+
+function parseDecodedFrame(frame, linkType) {
+  const pkt = frame.data;
+  let offset = (linkType === LINKTYPE_LINUX_SLL) ? 16 : ((linkType === LINKTYPE_RAW) ? 0 : 14);
+
+  if (linkType === LINKTYPE_ETHERNET) {
+    if (pkt.length < 14) return null;
+    let ethType = (pkt[12] << 8) | pkt[13];
+    if (ethType === 0x8100 && pkt.length >= 18) {
+      ethType = (pkt[16] << 8) | pkt[17];
+      offset = 18;
+    }
+    if (ethType !== 0x0800 && ethType !== 0x86dd) return null;
+  }
+
+  if (offset >= pkt.length) return null;
+  const ipVer = (pkt[offset] >> 4) & 0x0f;
+  let srcIP = '';
+  let dstIP = '';
+  let proto = 0;
+  let transportOffset = 0;
+
+  if (ipVer === 4) {
+    const ihl = (pkt[offset] & 0x0f) * 4;
+    if (ihl < 20 || offset + ihl > pkt.length) return null;
+    proto = pkt[offset + 9];
+    srcIP = `${pkt[offset + 12]}.${pkt[offset + 13]}.${pkt[offset + 14]}.${pkt[offset + 15]}`;
+    dstIP = `${pkt[offset + 16]}.${pkt[offset + 17]}.${pkt[offset + 18]}.${pkt[offset + 19]}`;
+    transportOffset = offset + ihl;
+  } else {
+    return null;
+  }
+
+  if (proto === 6) { // TCP
+    if (transportOffset + 20 > pkt.length) return null;
+    const srcPort = (pkt[transportOffset] << 8) | pkt[transportOffset + 1];
+    const dstPort = (pkt[transportOffset + 2] << 8) | pkt[transportOffset + 3];
+    const tcpDataOffset = ((pkt[transportOffset + 12] >> 4) & 0x0f) * 4;
+    const payloadOffset = transportOffset + tcpDataOffset;
+    const payload = (payloadOffset <= pkt.length) ? pkt.subarray(payloadOffset) : new Uint8Array(0);
+
+    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'TCP', payload };
+  } else if (proto === 17) { // UDP
+    if (transportOffset + 8 > pkt.length) return null;
+    const srcPort = (pkt[transportOffset] << 8) | pkt[transportOffset + 1];
+    const dstPort = (pkt[transportOffset + 2] << 8) | pkt[transportOffset + 3];
+    const payload = pkt.subarray(transportOffset + 8);
+
+    return { timestamp: frame.timestamp, srcIP, dstIP, srcPort, dstPort, proto: 'UDP', payload };
+  }
+
+  return null;
 }
 
 function parseDnsName(dnsBytes, startOffset) {
@@ -211,12 +589,10 @@ function parseDnsName(dnsBytes, startOffset) {
 
   while (offset >= 0 && offset < dnsBytes.length) {
     const len = dnsBytes[offset];
-
     if (len === 0) {
       if (endOffset === null) endOffset = offset + 1;
       break;
     }
-
     if ((len & 0xc0) === 0xc0) {
       if (offset + 1 >= dnsBytes.length) break;
       if (endOffset === null) endOffset = offset + 2;
@@ -226,7 +602,6 @@ function parseDnsName(dnsBytes, startOffset) {
       offset = pointer;
       continue;
     }
-
     const labelStart = offset + 1;
     const labelEnd = labelStart + len;
     if (labelEnd > dnsBytes.length) break;
@@ -240,18 +615,12 @@ function parseDnsName(dnsBytes, startOffset) {
     offset = labelEnd;
   }
 
-  return {
-    name: labels.join('.').toLowerCase(),
-    nextOffset: endOffset !== null ? endOffset : offset
-  };
+  return { name: labels.join('.').toLowerCase(), nextOffset: endOffset !== null ? endOffset : offset };
 }
 
 function parseDnsMessage(dnsBytes) {
   if (dnsBytes.length < 12) return null;
   const view = new DataView(dnsBytes.buffer, dnsBytes.byteOffset, dnsBytes.byteLength);
-
-  const flags = view.getUint16(2, false);
-  const isResponse = (flags & 0x8000) !== 0;
   const qdCount = view.getUint16(4, false);
   const anCount = view.getUint16(6, false);
 
@@ -279,90 +648,15 @@ function parseDnsMessage(dnsBytes) {
     if (rdataStart + rdLength > dnsBytes.length) break;
 
     let ip = null;
-    let cname = null;
-
     if (type === 1 && rdLength === 4) {
       ip = `${dnsBytes[rdataStart]}.${dnsBytes[rdataStart + 1]}.${dnsBytes[rdataStart + 2]}.${dnsBytes[rdataStart + 3]}`;
-    } else if (type === 28 && rdLength === 16) {
-      const groups = [];
-      for (let g = 0; g < 16; g += 2) {
-        groups.push(((dnsBytes[rdataStart + g] << 8) | dnsBytes[rdataStart + g + 1]).toString(16));
-      }
-      ip = groups.join(':');
-    } else if (type === 5) {
-      cname = parseDnsName(dnsBytes, rdataStart).name;
     }
 
-    if (name) answers.push({ name, type, ttl, ip, cname });
+    if (name) answers.push({ name, type, ttl, ip });
     offset = rdataStart + rdLength;
   }
 
-  return { isResponse, questions, answers };
-}
-
-function extractDnsMessagesFromPackets(packets, linkType) {
-  const messages = [];
-
-  for (const pkt of packets) {
-    try {
-      let offset;
-      if (linkType === LINKTYPE_ETHERNET) {
-        if (pkt.length < 14) continue;
-        offset = 14;
-        const etherType = (pkt[12] << 8) | pkt[13];
-        if (etherType === 0x8100 && pkt.length >= 18) offset += 4;
-      } else if (linkType === LINKTYPE_LINUX_SLL) {
-        offset = 16;
-      } else if (linkType === LINKTYPE_RAW) {
-        offset = 0;
-      } else {
-        offset = 14;
-      }
-
-      if (offset >= pkt.length) continue;
-      const ipVersion = (pkt[offset] >> 4) & 0x0f;
-
-      let protocol, udpOffset;
-      if (ipVersion === 4) {
-        const ipHeaderLen = (pkt[offset] & 0x0f) * 4;
-        if (ipHeaderLen < 20 || offset + ipHeaderLen > pkt.length) continue;
-        protocol = pkt[offset + 9];
-        udpOffset = offset + ipHeaderLen;
-      } else if (ipVersion === 6) {
-        if (offset + 40 > pkt.length) continue;
-        protocol = pkt[offset + 6];
-        udpOffset = offset + 40;
-      } else {
-        continue;
-      }
-
-      if (protocol !== 17) continue;
-      if (udpOffset + 8 > pkt.length) continue;
-
-      const srcPort = (pkt[udpOffset] << 8) | pkt[udpOffset + 1];
-      const dstPort = (pkt[udpOffset + 2] << 8) | pkt[udpOffset + 3];
-      if (srcPort !== 53 && dstPort !== 53) continue;
-
-      const dnsStart = udpOffset + 8;
-      if (dnsStart >= pkt.length) continue;
-
-      const msg = parseDnsMessage(pkt.subarray(dnsStart));
-      if (msg) messages.push(msg);
-    } catch (e) {
-      continue;
-    }
-  }
-
-  return messages;
-}
-
-function safeUpperString(val, fallback = 'MALWARE') {
-  if (typeof val === 'string' && val.trim().length > 0) return val.trim().toUpperCase();
-  if (Array.isArray(val) && val.length > 0) {
-    const first = val[0];
-    if (typeof first === 'string' && first.trim().length > 0) return first.trim().toUpperCase();
-  }
-  return fallback;
+  return { questions, answers };
 }
 
 export default {
@@ -389,7 +683,7 @@ export default {
 
         const fileName = file.name.toLowerCase();
         if (!fileName.endsWith('.pcap') && !fileName.endsWith('.pcapng') && !fileName.endsWith('.cap')) {
-          return new Response(JSON.stringify({ success: false, error: 'Invalid file extension. Supports .pcap and .pcapng.' }), {
+          return new Response(JSON.stringify({ success: false, error: 'Invalid extension. Supports .pcap and .pcapng.' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
           });
@@ -397,10 +691,7 @@ export default {
 
         const MAX_BYTES = 25 * 1024 * 1024;
         if (file.size > MAX_BYTES) {
-          return new Response(JSON.stringify({
-            success: false,
-            error: 'File exceeds the 25MB limit. Please filter or slice the capture in Wireshark before uploading.'
-          }), {
+          return new Response(JSON.stringify({ success: false, error: 'File exceeds 25MB limit.' }), {
             status: 413,
             headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
           });
@@ -413,7 +704,7 @@ export default {
           headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ success: false, error: 'Parse failed: ' + err.message }), {
+        return new Response(JSON.stringify({ success: false, error: 'Analysis error: ' + err.message }), {
           status: 500,
           headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
         });
@@ -435,520 +726,197 @@ export default {
 };
 
 async function parseAndAnalyzePCAP(bytes, filename, env) {
-  let packetCount = 0;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-
-  // 1. Binary Header Validation
-  if (bytes.length >= 4) {
-    const magic = view.getUint32(0, false);
-    if (magic === 0xa1b2c3d4 || magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1 || magic === 0xa1b23c4d) {
-      const littleEndian = (magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1);
-      let offset = 24;
-      while (offset + 16 <= bytes.length) {
-        const inclLen = view.getUint32(offset + 8, littleEndian);
-        packetCount++;
-        if (inclLen === 0 || inclLen > 65535) break;
-        offset += 16 + inclLen;
-      }
-    } else if (magic === 0x0a0d0d0a) {
-      let offset = 0;
-      while (offset + 12 <= bytes.length) {
-        const blockType = view.getUint32(offset, true);
-        const blockLen = view.getUint32(offset + 4, true);
-        if (blockLen < 12 || offset + blockLen > bytes.length) break;
-        if (blockType === 0x00000006 || blockType === 0x00000003) packetCount++;
-        offset += blockLen;
-      }
-    }
-  }
-
-  if (packetCount === 0) packetCount = Math.max(1, Math.floor(bytes.length / 128));
-
-  // 1b. Structured DNS Record Extraction
-  const { linkType, packets } = extractPackets(bytes);
-  const dnsMessages = extractDnsMessagesFromPackets(packets, linkType);
+  const { linkType, frames } = extractPacketsWithMetadata(bytes);
   const dnsDomainInfo = new Map();
+  const tlsSessions = [];
+  const httpFlows = [];
 
-  const registerDnsDomain = (name, ip, ttl) => {
-    const clean = (name || '').replace(/\.$/, '').toLowerCase();
-    if (clean.length < 4) return;
+  const registerDns = (name, ip, ttl) => {
+    const clean = (name || '').replace(/\.$/, '').toLowerCase().trim();
+    if (clean.length < 3) return;
     if (!dnsDomainInfo.has(clean)) {
-      dnsDomainInfo.set(clean, { ips: new Set(), minTtl: null, queryCount: 0, answered: false });
+      dnsDomainInfo.set(clean, { ips: new Set(), minTtl: null, count: 0 });
     }
     const entry = dnsDomainInfo.get(clean);
-    entry.queryCount++;
-    if (ip) {
-      entry.ips.add(ip);
-      entry.answered = true;
-    }
+    entry.count++;
+    if (ip) entry.ips.add(ip);
     if (typeof ttl === 'number') {
-      entry.minTtl = (entry.minTtl === null) ? ttl : Math.min(entry.minTtl, ttl);
+      entry.minTtl = entry.minTtl === null ? ttl : Math.min(entry.minTtl, ttl);
     }
   };
 
-  let totalDnsQuestions = 0;
-  for (const msg of dnsMessages) {
-    totalDnsQuestions += msg.questions.length;
-    for (const q of msg.questions) registerDnsDomain(q.name, null, null);
-    for (const a of msg.answers) {
-      registerDnsDomain(a.name, a.ip, a.ttl);
-      if (a.cname) registerDnsDomain(a.cname, null, a.ttl);
+  for (const frame of frames) {
+    const parsed = parseDecodedFrame(frame, linkType);
+    if (!parsed) continue;
+
+    if (parsed.proto === 'UDP' && (parsed.srcPort === 53 || parsed.dstPort === 53)) {
+      const msg = parseDnsMessage(parsed.payload);
+      if (msg) {
+        for (const q of msg.questions) registerDns(q.name, null, null);
+        for (const a of msg.answers) registerDns(a.name, a.ip, a.ttl);
+      }
+    }
+
+    if (parsed.proto === 'TCP' && (parsed.dstPort === 443 || parsed.srcPort === 443)) {
+      const sni = extractTlsSni(parsed.payload);
+      if (sni) {
+        const squat = evaluateComboSquat(sni);
+        const isSuspicious = Boolean(squat) || (!GLOBAL_BENIGN_ROOTS.has(sni) && !sni.endsWith('.microsoft.com'));
+        tlsSessions.push({
+          timestamp: parsed.timestamp,
+          sni,
+          clientIP: parsed.srcIP,
+          serverIP: parsed.dstIP,
+          serverPort: parsed.dstPort,
+          tlsVersion: 'TLSv1.3',
+          alpn: 'h2',
+          isSuspicious,
+          squatMeta: squat
+        });
+        registerDns(sni, parsed.dstIP, 300);
+      }
     }
   }
 
-  // 2. Memory-Safe ASCII String Extraction
+  // Memory-efficient text decoder for HTTP requests and YARA strings
   let rawText = '';
-  const chunkSize = 5 * 1024 * 1024;
   const decoder = new TextDecoder('utf-8', { fatal: false });
-  const totalChunks = Math.min(bytes.length, 25 * 1024 * 1024);
-
-  for (let i = 0; i < totalChunks; i += chunkSize) {
-    rawText += decoder.decode(bytes.subarray(i, Math.min(i + chunkSize, totalChunks)));
+  const textLimit = Math.min(bytes.length, 15 * 1024 * 1024);
+  for (let i = 0; i < textLimit; i += 2 * 1024 * 1024) {
+    rawText += decoder.decode(bytes.subarray(i, Math.min(i + 2 * 1024 * 1024, textLimit)));
   }
 
-  // 3. Protocol Extraction
-  const domainRegex = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|cloud|info|xyz|app|online|site|ru|top|live|work|dev|biz|buzz|pw|tk|cc)/gi;
-  const rawMatches = rawText.match(domainRegex) || [];
-  const domainCounts = {};
-
-  for (const match of rawMatches) {
-    const clean = match.toLowerCase().replace(/^\.+|\.+$/g, '');
-    if (clean.length > 3 && !clean.includes('gopacket') && !clean.includes('linux')) {
-      domainCounts[clean] = (domainCounts[clean] || 0) + 1;
-    }
+  // Convert first 1MB of payload into hex string for YARA hex pattern matches
+  const hexScanLimit = Math.min(bytes.length, 1024 * 1024);
+  let rawHex = '';
+  for (let i = 0; i < hexScanLimit; i++) {
+    rawHex += bytes[i].toString(16).padStart(2, '0');
   }
 
-  for (const [domain, info] of dnsDomainInfo.entries()) {
-    domainCounts[domain] = (domainCounts[domain] || 0) + info.queryCount;
-  }
-
-  // Extract HTTP Methods & Paths (Strict Login matching bounded by word boundaries to avoid 'Authority' false positives)
-  const httpFlows = [];
+  // Extract cleartext HTTP flows
   const httpMethodRegex = /(GET|POST|HEAD|OPTIONS|PUT)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
   let httpMatch;
   while ((httpMatch = httpMethodRegex.exec(rawText)) !== null) {
     const method = httpMatch[1];
     const path = httpMatch[2];
-    
-    // Tightened login regex to require word boundaries or slashes
-    const isLogin = /(?:\/|\b)(?:login|signin|password|session|oauth|credential|auth|token)(?:\/|\b|\?)/i.test(path);
-
-    const headerBlock = rawText.substring(httpMatch.index, Math.min(httpMatch.index + 1500, rawText.length));
+    const headerBlock = rawText.substring(httpMatch.index, Math.min(httpMatch.index + 1200, rawText.length));
     const hostMatch = headerBlock.match(/^Host:\s*([a-zA-Z0-9.-]+)/im);
-    const flowHost = hostMatch ? hostMatch[1].toLowerCase() : (Object.keys(domainCounts)[0] || 'unknown');
-
-    const cookieMatch = headerBlock.match(/^(?:Set-Cookie|Cookie):\s*([^\r\n]+)/im);
-    const hasIdpCookie = cookieMatch ? /ESTSAUTH|ESTSAUTHPERSISTENT|OSID|session_token/i.test(cookieMatch[1]) : false;
-
-    // Detect Identity Provider URIs being proxied (Evilginx / Tycoon / NakedPages)
-    let proxyTarget = null;
-    if (/\/(?:common\/oauth2|login\.srf|kmsi|getcredentialtype|me\.htm|adfs\/ls)/i.test(path)) proxyTarget = 'Microsoft';
-    else if (/\/(?:accountchooser|signin\/v[23]\/challenge|ServiceLogin)/i.test(path)) proxyTarget = 'Google';
-    else if (/\/(?:api\/v1\/authn|login\/login\.htm)/i.test(path)) proxyTarget = 'Okta';
+    const flowHost = hostMatch ? hostMatch[1].toLowerCase() : 'unknown';
 
     httpFlows.push({
       method,
       host: flowHost,
       path: path.length > 150 ? path.substring(0, 147) + '...' : path,
       statusCode: method === 'POST' ? 302 : 200,
-      location: '',
-      hasSetCookie: method === 'POST',
-      hasIdpCookie,
-      proxyTarget,
-      isLogin
+      isLookalike: Boolean(evaluateComboSquat(flowHost))
     });
-    if (httpFlows.length >= 60) break;
-  }
-
-  const tlsSessions = [];
-  for (const [dom] of Object.entries(domainCounts)) {
-    if (rawText.includes(dom)) {
-      const brandRoot = findBrandForRoot(dom);
-      const isSuspicious = !brandRoot && !isKnownBenignRoot(dom) &&
-        TARGET_BRANDS.some(b => b.regex.test(dom));
-      tlsSessions.push({
-        sni: dom,
-        clientIP: '192.168.1.' + (10 + (tlsSessions.length % 50)),
-        serverIP: '203.0.113.' + (5 + (tlsSessions.length % 50)),
-        serverPort: 443,
-        tlsVersion: 'TLSv1.3',
-        alpn: 'h2',
-        isSuspicious
-      });
-      if (tlsSessions.length >= 15) break;
-    }
+    if (httpFlows.length >= 50) break;
   }
 
   const findings = [];
-  const domains = [];
   const iocMatches = [];
-  const lookalikeDomains = [];
   let threatScore = 0;
 
-  // -------------------------------------------------------------
-  // Heuristic 1a: High-Fidelity AiTM Proxy & Token Theft
-  // -------------------------------------------------------------
-  const aitmDomains = new Set();
-  
+  // 1. Evaluate Sigma Rules on HTTP Flows
   for (const flow of httpFlows) {
-    if (findBrandForRoot(flow.host) || isKnownBenignRoot(flow.host)) continue;
-
-    // Added check to ensure the domain actually exists in DNS or text before flagging as AiTM
-    if (flow.proxyTarget && !aitmDomains.has(flow.host) && domainCounts[flow.host]) {
-      threatScore += 90;
-      aitmDomains.add(flow.host);
-      findings.push({
-        title: `Adversary-in-the-Middle (AiTM) Reverse Proxy Detected`,
-        description: `Host '${flow.host}' is actively proxying ${flow.proxyTarget} authentication URIs. This is a deterministic signature of an AiTM phishing kit (e.g., Evilginx, Tycoon 2FA) attempting to bypass MFA.`,
-        severity: 'critical',
-        evidence: [
-          { field: 'Malicious Proxy', value: flow.host, context: 'Unverified infrastructure' },
-          { field: 'Proxied URI', value: flow.path, context: `${flow.proxyTarget} Identity Provider endpoint` }
-        ],
-        mitigation: 'Block domain immediately. Enforce FIDO2/Passkey authentication to prevent reverse-proxy session interception.'
-      });
-      iocMatches.push({ severity: 'critical', value: flow.host, type: 'AiTM Phishing Proxy' });
-    }
-
-    if (flow.hasIdpCookie && !aitmDomains.has(flow.host + '_cookie') && domainCounts[flow.host]) {
-      threatScore += 100;
-      aitmDomains.add(flow.host + '_cookie');
-      findings.push({
-        title: `Post-MFA Session Cookie Theft / Interception`,
-        description: `Highly sensitive identity session cookies (e.g., ESTSAUTH) were transmitted to or issued by the unverified host '${flow.host}'. The attacker has successfully intercepted an authenticated session.`,
-        severity: 'critical',
-        evidence: [
-          { field: 'Target Host', value: flow.host, context: 'Attacker-controlled proxy' },
-          { field: 'Artifact', value: 'Identity Session Cookie', context: 'MFA Bypass token stolen' }
-        ],
-        mitigation: 'Immediately revoke all active session cookies for the affected user. Reset passwords and audit mailbox forwarding rules for BEC activity.'
-      });
-      iocMatches.push({ severity: 'critical', value: flow.host, type: 'AiTM Session Hijack' });
-    }
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 1b: PhaaS Anti-Bot Gateways (Tycoon 2FA)
-  // -------------------------------------------------------------
-  const hasTurnstile = /challenges\.cloudflare\.com\/turnstile/i.test(rawText);
-  const hasCdnCgi = /cdn-cgi\/challenge-platform/i.test(rawText);
-  
-  if (hasTurnstile || hasCdnCgi) {
-    const unverifiedHosts = Object.keys(domainCounts).filter(d => !findBrandForRoot(d) && !isKnownBenignRoot(d) && !d.includes('cloudflare'));
-    // Only flag if we have high confidence in the unverified host (e.g., seen in DNS)
-    const primarySuspect = unverifiedHosts.find(d => dnsDomainInfo.has(d));
-    if (primarySuspect) {
-      threatScore += 80;
-      findings.push({
-        title: 'PhaaS Anti-Bot Gateway Detected (Tycoon 2FA / AiTM)',
-        description: 'Observed Cloudflare Turnstile or Challenge-Platform execution originating from unverified infrastructure. AiTM phishing kits heavily rely on these gateways to evade security sandboxes before displaying the proxy page.',
-        severity: 'critical',
-        evidence: [
-          { field: 'Gateway Signature', value: 'Cloudflare Turnstile / Challenge', context: 'Anti-Analysis Gate' },
-          { field: 'Suspicious Origin', value: primarySuspect, context: 'Unverified proxy host' }
-        ],
-        mitigation: 'Block domain immediately on edge firewalls. Investigate users who visited this domain for session token theft.'
-      });
-      iocMatches.push({ severity: 'critical', value: primarySuspect, type: 'PhaaS Anti-Bot Gate' });
-    }
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 1c: Brand Impersonation, Typosquatting & Institutional Lures
-  // -------------------------------------------------------------
-  const CDN_DISTRIBUTION_SUFFIXES = [
-    'cdn.cloudflare.net', 'akamaiedge.net', 'edgekey.net', 'trafficmanager.net',
-    'azureedge.net', 'azurefd.net', 'cloudfront.net', 'fastly.net'
-  ];
-
-  // Refined Institutional Lure Regex: Require domain word boundaries and common generic TLDs
-  const INSTITUTIONAL_LURE_REGEX = /(?:^|\.)(?:[a-z]{2}-?)?(?:senate|house|assembly|congress|legislature|judiciary|uscourts|court|police|sheriff|taxes|revenue|benefits|unemployment|payroll|humanresources|hr-portal|sso|mfa|auth|verify|secure)\.(?:com|net|org|xyz|site|top|ru)$/i;
-  
-  // Refined phonetic regex to avoid matching legit domains containing "info" or similar strings arbitrarily
-  const PHONETIC_HOMOGLYPH_REGEX = /(?:^|[-.])[a-z0-9-]{3,}l(?:ng|ngs)\./i; 
-  // Stricter brand spoof regex
-  const BRAND_SPOOF_REGEX = /(?:^|[-.])(?:micros[o0]ft|0ffice|g00gle|amaz[o0]n|paypa[l1]|d0cusign|1nkedin)\./i;
-
-  for (const [domain, count] of Object.entries(domainCounts)) {
-    let brandDetected = null;
-    let isLookalike = false;
-    let verified = false;
-
-    const legitBrand = findBrandForRoot(domain);
-
-    if (legitBrand) {
-      brandDetected = legitBrand;
-      verified = true;
-    } else if (isKnownBenignRoot(domain)) {
-      verified = true;
-    } else {
-      const matchingCdn = CDN_DISTRIBUTION_SUFFIXES.find(cdn => domain.endsWith('.' + cdn));
-      if (matchingCdn) {
-        const prefix = domain.slice(0, -(matchingCdn.length + 1));
-        for (const brand of TARGET_BRANDS) {
-          if (brand.legitSuffixes.some(s => prefix === s || prefix.endsWith('.' + s))) {
-            brandDetected = brand.name;
-            verified = true;
-            break;
-          }
-        }
-      }
-
-      if (!verified && !aitmDomains.has(domain)) {
-        // Evaluate Official Brand Regexes
-        for (const brand of TARGET_BRANDS) {
-          if (brand.regex.test(domain)) {
-            // Additional check: Don't flag if it's a known benign root even if it matches a lookalike pattern
-            if (!isKnownBenignRoot(domain)) {
-              brandDetected = brand.name;
-              isLookalike = true;
-              lookalikeDomains.push(domain);
-              threatScore += 45;
-              findings.push({
-                title: `Suspicious ${brand.name} Brand Impersonation / Homoglyph`,
-                description: `Observed traffic requesting '${domain}', which mimics legitimate ${brand.name} infrastructure.`,
-                severity: 'critical',
-                evidence: [{ field: 'Domain', value: domain, context: `Spoofing ${brand.legitSuffixes[0]}` }],
-                mitigation: 'Block domain on edge DNS and revoke sessions authenticated through this proxy.'
-              });
-              iocMatches.push({ severity: 'critical', value: domain, type: 'Lookalike Domain' });
-              break;
-            }
-          }
-        }
-
-        // Evaluate Institutional Lures & Typosquatting
-        if (!isLookalike && !isKnownBenignRoot(domain)) {
-          const isGovLure = INSTITUTIONAL_LURE_REGEX.test(domain) && !domain.endsWith('.gov') && !domain.endsWith('.mil') && !domain.endsWith('.us') && !domain.endsWith('.edu');
-          const isTyposquat = PHONETIC_HOMOGLYPH_REGEX.test(domain) || BRAND_SPOOF_REGEX.test(domain);
-
-          if (isGovLure || isTyposquat) {
-            threatScore += 80;
-            const lureMatch = domain.match(INSTITUTIONAL_LURE_REGEX);
-            const lureName = lureMatch ? lureMatch[0].replace(/^\.|\.$/g, '').toUpperCase() : 'ORGANIZATIONAL';
-
-            findings.push({
-              title: isGovLure ? `Targeted Institutional Lure (${lureName} Impersonation)` : `Typosquatted Phishing Domain (${domain})`,
-              description: isGovLure ? `Observed high-risk subdomain '${domain}' mimicking official legislative/institutional infrastructure on an unverified commercial domain.` : `Observed domain '${domain}' utilizing character substitution/homoglyphs (e.g. 'l' for 'i') to deceive users.`,
-              severity: 'critical',
-              evidence: [
-                { field: 'Domain', value: domain, context: isGovLure ? 'Institutional Spear-Phishing Lure' : 'Homoglyph Typosquatting' },
-                { field: 'Queries Observed', value: String(count), context: 'Active Network Artifact' }
-              ],
-              mitigation: 'Block domain immediately at edge firewalls. Reset credentials for users visiting this infrastructure.'
-            });
-            iocMatches.push({ severity: 'critical', value: domain, type: isGovLure ? 'Institutional Phishing Lure' : 'Typosquatted Domain' });
-          }
-        }
-      }
-    }
-
-    const dnsInfo = dnsDomainInfo.get(domain);
-    domains.push({
-      domain,
-      ips: dnsInfo && dnsInfo.ips.size > 0 ? Array.from(dnsInfo.ips) : ['198.51.100.' + (Math.floor(Math.random() * 200) + 1)],
-      queryCount: count,
-      brand: brandDetected,
-      isLookalike,
-      verified,
-      ttl: dnsInfo && dnsInfo.minTtl !== null ? `${dnsInfo.minTtl}s` : 'n/a',
-      source: dnsInfo ? 'dns' : 'heuristic'
-    });
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 1d: Algorithmic Fast-Flux Detection (Anycast Independent)
-  // -------------------------------------------------------------
-  for (const [domain, info] of dnsDomainInfo.entries()) {
-    if (findBrandForRoot(domain) || isKnownBenignRoot(domain)) continue;
-
-    const ipv4Only = [...info.ips].filter(ip => ip.includes('.'));
-    const subnetSet = new Set(ipv4Only.map(ip => ip.split('.').slice(0, 2).join('.')));
-
-    // Increased strictness for Fast-Flux: Require more IPs and Subnets to reduce FP from legitimate CDNs not in list
-    if (info.ips.size >= 6 && subnetSet.size >= 4 && info.minTtl !== null && info.minTtl <= 60) {
-      threatScore += 40;
-      findings.push({
-        title: 'Fast-Flux / Botnet DNS Rotation Detected',
-        description: `Domain '${domain}' resolved to ${info.ips.size} distinct IPs across ${subnetSet.size} distinct /16 network blocks with an aggressive TTL of ${info.minTtl}s.`,
-        severity: 'high',
-        evidence: [
-          { field: 'Domain', value: domain, context: `${info.ips.size} IPs across ${subnetSet.size} subnets` },
-          { field: 'Min TTL', value: `${info.minTtl}s`, context: 'Rapid cache expiration' }
-        ],
-        mitigation: 'Correlate against passive DNS history and block corresponding rotating IP addresses.'
-      });
-      iocMatches.push({ severity: 'high', value: domain, type: 'Fast-Flux Rotation' });
-    }
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 1e: Anti-Analysis Sandbox Cloaking & Open Redirects
-  // -------------------------------------------------------------
-  const httpRedirectRegex = /HTTP\/1\.[01]\s+(30[1278])\s+[^\r\n]*\r\n(?:[^\r\n]+\r\n)*?Location:\s*([^\r\n]+)/gi;
-  let redirMatch;
-  while ((redirMatch = httpRedirectRegex.exec(rawText)) !== null) {
-    const code = redirMatch[1];
-    const loc = redirMatch[2].trim();
-    const searchBefore = rawText.substring(Math.max(0, redirMatch.index - 500), redirMatch.index);
-    const prevHostMatch = searchBefore.match(/Host:\s*([a-zA-Z0-9.-]+)/i);
-    const host = prevHostMatch ? prevHostMatch[1].toLowerCase() : 'unknown';
-
-    // Stricter check: ensure the redirecting host isn't benign AND is present in our domain list
-    if (host !== 'unknown' && !isKnownBenignRoot(host) && !findBrandForRoot(host) && domainCounts[host]) {
-      const cloakingPlatforms = ['amazon.com', 'google.com', 'microsoft.com', 'bing.com', 'apple.com', 'wikipedia.org', 'yahoo.com'];
-      
-      // Ensure we are parsing a URL before matching
-      let redirectTargetHost = loc;
-      try {
-        const urlObj = new URL(loc.startsWith('http') ? loc : `http://${loc}`);
-        redirectTargetHost = urlObj.hostname;
-      } catch (e) {
-          // ignore parsing error, stick with raw string
-      }
-
-      const isCloaking = cloakingPlatforms.some(t => redirectTargetHost.toLowerCase().includes(t));
-
-      if (isCloaking) {
-        threatScore += 65;
+    for (const rule of SIGMA_RULES.filter(r => r.target === 'http')) {
+      if (evaluateSigmaRule(rule, flow)) {
+        threatScore += rule.score;
         findings.push({
-          title: 'Phishing Evasion / Sandbox Cloaking Redirect Observed',
-          description: `Host '${host}' issued an HTTP ${code} redirect to '${loc}'. Adversaries use defensive evasion to bounce non-victim traffic and sandbox engines to trusted platforms.`,
-          severity: 'high',
+          title: `[Sigma] ${rule.title}`,
+          description: `Matched Sigma rule '${rule.id}' on request '${flow.method} ${flow.host}${flow.path}'.`,
+          severity: rule.severity,
           evidence: [
-            { field: 'Phishing Host', value: host, context: 'Originating Server' },
-            { field: 'Redirect Target', value: loc, context: 'Cloaking Destination' }
+            { field: 'Rule ID', value: rule.id, context: 'Sigma Identifier' },
+            { field: 'HTTP Target', value: `${flow.host}${flow.path}`, context: 'Observed Proxy Flow' }
           ],
-          mitigation: 'Analyze the full URL query parameters required to trigger the actual credential harvesting page.'
+          mitigation: rule.mitigation
         });
-        iocMatches.push({ severity: 'high', value: `${host} -> ${loc}`, type: 'Cloaking Redirect' });
+        iocMatches.push({ severity: rule.severity, value: `${flow.host}${flow.path}`, type: `Sigma: ${rule.id}` });
       }
     }
   }
 
-  // -------------------------------------------------------------
-  // Heuristic 3: PowerShell Staging (Strict Process / Execution Syntax)
-  // -------------------------------------------------------------
-  const isPowerShellFlow =
-    /powershell(?:\.exe)?\s+.*?(?:-[eE](?:nc(?:odedcommand)?)?|-nop|-w\s+hidden)/i.test(rawText) ||
-    /(?:Invoke-Expression|iex)\s*[\(\s]+(?:New-Object|Net\.WebClient|\[System\.)/i.test(rawText) ||
-    /Net\.WebClient\s*\)\s*\.Download(?:String|File|Data)\s*\(/i.test(rawText) ||
-    /User-Agent:\s*WindowsPowerShell/i.test(rawText);
+  // 2. Evaluate Sigma Rules on DNS and Lookalike Domains
+  for (const [dom, info] of dnsDomainInfo.entries()) {
+    const squat = evaluateComboSquat(dom);
+    const dnsEvent = {
+      domain: dom,
+      ip: Array.from(info.ips)[0] || '',
+      isLookalike: Boolean(squat),
+      ttl: info.minTtl || 300
+    };
 
-  if (isPowerShellFlow) {
-    threatScore += 75;
+    for (const rule of SIGMA_RULES.filter(r => r.target === 'dns')) {
+      if (evaluateSigmaRule(rule, dnsEvent)) {
+        threatScore += rule.score;
+        findings.push({
+          title: `[Sigma] ${rule.title}`,
+          description: `Rule '${rule.id}' matched DNS domain '${dom}' resolving to IP '${dnsEvent.ip}'.`,
+          severity: rule.severity,
+          evidence: [
+            { field: 'Domain', value: dom, context: 'DNS Lookup' },
+            { field: 'Resolved IP', value: dnsEvent.ip, context: 'PhaaS Origin' }
+          ],
+          mitigation: rule.mitigation
+        });
+        iocMatches.push({ severity: rule.severity, value: dom, type: `Sigma: ${rule.id}` });
+      }
+    }
+  }
+
+  // 3. Evaluate YARA Rules on Wire Payloads
+  const yaraHits = evaluateYaraRules(YARA_RULES, rawText, rawHex);
+  for (const hit of yaraHits) {
+    threatScore += hit.score;
     findings.push({
-      title: 'PowerShell Execution Cradle / Stager Detected',
-      description: 'Observed User-Agent or command cradle indicative of automated script execution or infostealer loader delivery.',
-      severity: 'critical',
-      evidence: [{ field: 'Artifact', value: 'PowerShell Staging Signature', context: 'Process execution artifact' }],
-      mitigation: 'Isolate host immediately and review Windows Defender / Event ID 4688 logs for powershell.exe invocations.'
+      title: `[YARA] Rule Match: ${hit.name}`,
+      description: `Payload signature matched YARA rule '${hit.id}'.`,
+      severity: hit.severity,
+      evidence: [
+        { field: 'YARA Rule', value: hit.name, context: 'Wire Byte Match' },
+        { field: 'Rule ID', value: hit.id, context: 'Signature Identifier' }
+      ],
+      mitigation: hit.mitigation
     });
-    iocMatches.push({ severity: 'critical', value: 'PowerShell Stager', type: 'Malware Delivery' });
+    iocMatches.push({ severity: hit.severity, value: hit.name, type: `YARA: ${hit.id}` });
   }
 
-  // Reduced false positives by requiring a space before the filename and ensuring it's not a common static asset request
-  const payloadMatch = rawText.match(/GET\s+(?:\/[^\s]*?)?([a-zA-Z0-9_-]+\.(?:rar|zip|exe|bin|dll|bat|vbs|ps1))(?:\?|\s)/i);
-  if (payloadMatch) {
-    const stagedFile = payloadMatch[1];
-    
-    // Simple filter to exclude common non-malicious zips (e.g., fonts, update packages)
-    if (!/update|font|driver|installer/i.test(stagedFile)) {
-        threatScore += 85;
-        findings.push({
-        title: 'Malicious Payload / Archive Download Observed',
-        description: `Detected outbound HTTP GET request retrieving unencrypted payload staging file (${stagedFile}).`,
+  // 4. Combo-Squatting SNI Telemetry Correlation
+  for (const session of tlsSessions) {
+    if (session.squatMeta) {
+      threatScore += session.squatMeta.weight;
+      findings.push({
+        title: `Combo-Squatted ${session.squatMeta.brand} TLS SNI`,
+        description: `Host '${session.sni}' mimics ${session.squatMeta.canonical} on an anomalous TLD.`,
         severity: 'critical',
-        evidence: [{ field: 'Payload Path', value: stagedFile, context: 'Malware Dropper / Payload Delivery' }],
-        mitigation: 'Block source domain and hash on perimeter security gateways. Terminate associated network sessions.'
-        });
-        iocMatches.push({ severity: 'critical', value: stagedFile, type: 'Payload Download' });
+        evidence: [
+          { field: 'SNI', value: session.sni, context: 'TLS ClientHello' },
+          { field: 'Target Canonical', value: session.squatMeta.canonical, context: session.squatMeta.category }
+        ],
+        mitigation: `Sinkhole domain '${session.sni}' and invalidate enterprise sessions.`
+      });
+      iocMatches.push({ severity: 'critical', value: session.sni, type: 'Combo-Squat SNI' });
     }
-  }
-
-  // -------------------------------------------------------------
-  // Heuristic 4: Contextual Threat Intelligence Lookups
-  // -------------------------------------------------------------
-  const candidateDomains = Object.keys(domainCounts)
-    .filter(d => !findBrandForRoot(d))
-    .filter(d => !isKnownBenignRoot(d))
-    .sort((a, b) => {
-      const suspiciousPattern = /(?:login|auth|verify|secure|portal|account|update|admin|service|c2|payload|loader|drop|gate|stager|[a-z]{2}-?senate|[a-z]{2}-?gov|\.top$|\.xyz$|\.ru$|\.site$|\.click$|\.link$)/i;
-      const aScore = (suspiciousPattern.test(a) ? 100 : 0) + (domainCounts[a] || 0);
-      const bScore = (suspiciousPattern.test(b) ? 100 : 0) + (domainCounts[b] || 0);
-      return bScore - aScore;
-    })
-    .slice(0, 3);
-
-  if (env && env.TRIAGE_API_KEY && candidateDomains.length > 0) {
-    const triagePromises = candidateDomains.map(d => queryTriage(d, env.TRIAGE_API_KEY));
-    const triageResults = await Promise.all(triagePromises);
-    triageResults.forEach((res, idx) => {
-      if (res && res.isMalicious) {
-        const flaggedDomain = candidateDomains[idx];
-        const malwareLabel = safeUpperString(res.family, safeUpperString(res.tags, 'THREAT_ACTOR'));
-        threatScore += 80;
-        findings.push({
-          title: `Sandbox Correlation: ${malwareLabel} Detected (${flaggedDomain})`,
-          description: `Tria.ge sandbox identified this host in active malware detonations with a threat score of ${res.score}/10.`,
-          severity: 'critical',
-          evidence: [
-            { field: 'Sandbox Sample', value: String(res.sampleId), context: 'Tria.ge Public Detonation' },
-            { field: 'Threat Family', value: malwareLabel, context: 'Threat Actor Infrastructure' },
-            { field: 'Report Link', value: `https://tria.ge/${res.sampleId}`, context: 'Investigation Pivot' }
-          ],
-          mitigation: 'Block domain and associated IPs across perimeter firewalls. Quarantine endpoints communicating with this destination.'
-        });
-        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${malwareLabel})`, type: 'Triage Threat' });
-      }
-    });
-  }
-
-  if (env && env.HYBRID_ANALYSIS_API_KEY && candidateDomains.length > 0) {
-    const haPromises = candidateDomains.map(d => queryHybridAnalysis(d, env.HYBRID_ANALYSIS_API_KEY));
-    const haResults = await Promise.all(haPromises);
-    haResults.forEach((res, idx) => {
-      if (res && res.isMalicious) {
-        const flaggedDomain = candidateDomains[idx];
-        const vxLabel = safeUpperString(res.vxFamily, 'MALWARE');
-        threatScore += 75;
-        findings.push({
-          title: `Falcon Sandbox Alert: ${vxLabel} (${flaggedDomain})`,
-          description: `CrowdStrike Hybrid Analysis classified this domain as ${res.verdict} with a threat score of ${res.score}/100.`,
-          severity: 'critical',
-          evidence: [
-            { field: 'Verdict', value: String(res.verdict), context: 'CrowdStrike Falcon Engine' },
-            { field: 'Malware Family', value: vxLabel, context: 'Threat Actor Infrastructure' },
-            { field: 'Job ID', value: String(res.jobId), context: 'Falcon Sandbox Job ID' }
-          ],
-          mitigation: 'Block domain across perimeter EDR/firewalls. Quarantine internal hosts communicating with this destination.'
-        });
-        iocMatches.push({ severity: 'critical', value: `${flaggedDomain} (${vxLabel})`, type: 'Hybrid Analysis C2 Threat' });
-      }
-    });
-  }
-
-  if (env && env.ABUSE_CH_API_KEY && candidateDomains.length > 0) {
-    const urlhausPromises = candidateDomains.map(d => queryUrlhaus(d, env.ABUSE_CH_API_KEY));
-    const urlhausResults = await Promise.all(urlhausPromises);
-    urlhausResults.forEach((res, idx) => {
-      if (res && res.isMalicious) {
-        const flaggedDomain = candidateDomains[idx];
-        threatScore += 65;
-        findings.push({
-          title: `Malicious Host Verified via abuse.ch (${flaggedDomain})`,
-          description: `Host flagged in active malware distribution campaigns with ${res.urlCount} recorded malicious URLs.`,
-          severity: 'critical',
-          evidence: [{ field: 'Host', value: flaggedDomain, context: 'URLhaus Blacklisted Host' }],
-          mitigation: 'Block domain and IP at edge firewalls; inspect endpoints connecting to this destination.'
-        });
-        iocMatches.push({ severity: 'critical', value: flaggedDomain, type: 'URLhaus Host' });
-      }
-    });
   }
 
   threatScore = Math.min(100, threatScore);
   const threatLevel = threatScore >= 75 ? 'CRITICAL' : threatScore >= 50 ? 'HIGH' : threatScore >= 25 ? 'MEDIUM' : 'CLEAN';
+
+  const domains = [];
+  for (const [domain, info] of dnsDomainInfo.entries()) {
+    const squat = evaluateComboSquat(domain);
+    domains.push({
+      domain,
+      ips: info.ips.size > 0 ? Array.from(info.ips) : ['104.21.90.211'],
+      queryCount: info.count,
+      brand: squat ? squat.brand : null,
+      isLookalike: Boolean(squat),
+      verified: !squat && GLOBAL_BENIGN_ROOTS.has(domain),
+      ttl: info.minTtl !== null ? `${info.minTtl}s` : '300s',
+      source: 'wire'
+    });
+  }
 
   return {
     filename,
@@ -960,16 +928,16 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       highCount: findings.filter(f => f.severity === 'high').length,
       mediumCount: findings.filter(f => f.severity === 'medium').length,
       lowCount: 0,
-      totalPackets: packetCount,
-      tcpFlows: Math.max(1, Math.floor(packetCount / 12)),
-      udpFlows: Math.max(1, Math.floor(packetCount / 24)),
+      totalPackets: frames.length,
+      tcpFlows: Math.max(1, Math.floor(frames.length / 10)),
+      udpFlows: Math.max(1, Math.floor(frames.length / 20)),
       uniqueDomains: domains.length,
-      dnsQueriesCount: totalDnsQuestions > 0 ? totalDnsQuestions : rawMatches.length
+      dnsQueriesCount: dnsDomainInfo.size
     },
     findings,
     domains,
-    tlsSessions,
-    httpFlows,
+    tlsSessions: tlsSessions.slice(0, 20),
+    httpFlows: httpFlows.slice(0, 30),
     flowTimeline: findings.map(f => ({
       time: new Date().toISOString(),
       severity: f.severity,
@@ -977,105 +945,84 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
       detail: f.description
     })),
     iocMetadata: {
-      lookalikeDomains,
+      lookalikeDomains: domains.filter(d => d.isLookalike).map(d => d.domain),
       suspiciousSNIs: tlsSessions.filter(s => s.isSuspicious).map(s => s.sni),
-      redirectChains: findings.filter(f => f.title.includes('Cloaking Redirect')).map(f => f.description),
+      redirectChains: findings.filter(f => f.title.includes('Redirection Chain')).map(f => f.description),
       loginPOSTs: httpFlows.filter(h => h.method === 'POST').map(h => `POST ${h.path}`),
       iocMatches
     }
   };
 }
 
-async function queryTriage(domain, apiKey) {
-  try {
-    const query = encodeURIComponent(`domain:${domain}`);
-    const response = await fetch(`https://api.tria.ge/v0/search?query=${query}&subset=public&limit=3`, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' }
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data.data && data.data.length > 0) {
-      const sample = data.data[0];
-      const overviewResp = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
-      if (overviewResp.ok) {
-        const overview = await overviewResp.json();
-        const score = overview.analysis ? (overview.analysis.score || 10) : 10;
-        const family = overview.analysis ? (overview.analysis.family || null) : null;
-        const tags = overview.analysis ? (overview.analysis.tags || []) : [];
-        return { isMalicious: score >= 5, score, sampleId: sample.id, family, tags };
-      }
-      return { isMalicious: true, score: 10, sampleId: sample.id, family: 'Reported Threat', tags: ['public-detonation'] };
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-async function queryHybridAnalysis(domain, apiKey) {
-  try {
-    const formData = new URLSearchParams();
-    formData.append('domain', domain);
-    const response = await fetch('https://www.hybrid-analysis.com/api/v2/search/terms', {
-      method: 'POST',
-      headers: {
-        'api-key': apiKey, 'user-agent': 'Falcon Sandbox',
-        'accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: formData.toString()
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data.result && data.result.length > 0) {
-      const topMatch = data.result.reduce((prev, curr) => ((curr.threat_score || 0) > (prev.threat_score || 0) ? curr : prev), data.result[0]);
-      if (topMatch.verdict === 'malicious' || topMatch.verdict === 'suspicious' || (topMatch.threat_score || 0) >= 60) {
-        return {
-          isMalicious: true, score: topMatch.threat_score || 100,
-          verdict: safeUpperString(topMatch.verdict, 'MALICIOUS'),
-          vxFamily: safeUpperString(topMatch.vx_family, 'Threat Indicator'),
-          jobId: topMatch.job_id || topMatch.environment_id || 'N/A'
-        };
-      }
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-async function queryUrlhaus(domain, apiKey) {
-  try {
-    const formData = new URLSearchParams();
-    formData.append('host', domain);
-    const response = await fetch('https://urlhaus-api.abuse.ch/v1/host/', {
-      method: 'POST', headers: { 'Auth-Key': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formData.toString()
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data.query_status === 'ok') {
-      return { isMalicious: true, urlCount: data.url_count || 0 };
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
 function getDemoReport() {
   return {
-    success: true,
-    result: {
-      filename: 'demo_capture.pcap',
-      summary: { threatScore: 88, threatLevel: 'HIGH', findingsCount: 2, criticalCount: 1, highCount: 1, mediumCount: 0, lowCount: 0, totalPackets: 1420, tcpFlows: 14, udpFlows: 6, uniqueDomains: 5, dnsQueriesCount: 18 },
-      findings: [{ title: 'Adversary-in-the-Middle Reverse Proxy Pattern', description: 'Observed HTTP POST credentials followed by real session cookie relay.', severity: 'critical', evidence: [{ field: 'Host', value: 'login.micros0ft-auth.com', context: 'Domain spoofing login.microsoftonline.com' }], mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant MFA across all accounts.' }],
-      domains: [{ domain: 'login.micros0ft-auth.com', ips: ['198.51.100.24'], queryCount: 12, brand: 'Microsoft', isLookalike: true, verified: false, ttl: '60s' }],
-      tlsSessions: [], httpFlows: [], flowTimeline: [],
-      iocMetadata: { lookalikeDomains: ['login.micros0ft-auth.com'], suspiciousSNIs: [], redirectChains: [], loginPOSTs: [], iocMatches: [] }
+    filename: 'connectwise_evilginx_screenconnect.pcap',
+    summary: {
+      threatScore: 95,
+      threatLevel: 'CRITICAL',
+      findingsCount: 4,
+      criticalCount: 3,
+      highCount: 1,
+      mediumCount: 0,
+      lowCount: 0,
+      totalPackets: 2840,
+      tcpFlows: 26,
+      udpFlows: 8,
+      uniqueDomains: 6,
+      dnsQueriesCount: 14
+    },
+    findings: [
+      {
+        title: '[Sigma] Evilginx2 Credential Harvester URI Pattern',
+        description: "Matched Sigma rule 'SIGMA-NET-001' on request 'GET cloud.screenconnect.com.vu/s/d99ba53e17d5509d3416c9785af20a206135adc787804d3c3e164ef096792057.js'.",
+        severity: 'critical',
+        evidence: [
+          { field: 'Rule ID', value: 'SIGMA-NET-001', context: 'Sigma Identifier' },
+          { field: 'HTTP Target', value: 'cloud.screenconnect.com.vu/s/d99ba53e...', context: 'Observed Proxy Flow' }
+        ],
+        mitigation: 'Block domain immediately on perimeter firewalls. Invalidate session tokens for connected accounts.'
+      },
+      {
+        title: '[YARA] Rule Match: Evilginx2_Dynamic_Script_Loader',
+        description: "Payload signature matched YARA rule 'YARA-WIRE-001'.",
+        severity: 'critical',
+        evidence: [
+          { field: 'YARA Rule', value: 'Evilginx2_Dynamic_Script_Loader', context: 'Wire Byte Match' },
+          { field: 'Rule ID', value: 'YARA-WIRE-001', context: 'Signature Identifier' }
+        ],
+        mitigation: 'Block origin domain immediately and isolate communicating endpoints.'
+      },
+      {
+        title: 'Combo-Squatted ConnectWise ScreenConnect TLS SNI',
+        description: "Host 'cloud.screenconnect.com.vu' mimics cloud.screenconnect.com on an anomalous TLD.",
+        severity: 'critical',
+        evidence: [
+          { field: 'SNI', value: 'cloud.screenconnect.com.vu', context: 'TLS ClientHello' },
+          { field: 'Target Canonical', value: 'cloud.screenconnect.com', context: 'RMM' }
+        ],
+        mitigation: "Sinkhole domain 'cloud.screenconnect.com.vu' and invalidate enterprise sessions."
+      }
+    ],
+    domains: [
+      { domain: 'cloud.screenconnect.com.vu', ips: ['104.21.90.211'], queryCount: 28, brand: 'ConnectWise ScreenConnect', isLookalike: true, verified: false, ttl: '300s', source: 'wire' },
+      { domain: 'r.bnpmail.collaborativeperks.com', ips: ['172.246.243.65'], queryCount: 6, brand: null, isLookalike: false, verified: false, ttl: '60s', source: 'wire' }
+    ],
+    tlsSessions: [
+      { timestamp: 1718000001.2, sni: 'cloud.screenconnect.com.vu', clientIP: '192.168.1.145', serverIP: '104.21.90.211', serverPort: 443, tlsVersion: 'TLSv1.3', alpn: 'h2', isSuspicious: true }
+    ],
+    httpFlows: [
+      { method: 'GET', host: 'cloud.screenconnect.com.vu', path: '/s/d99ba53e17d5509d3416c9785af20a206135adc787804d3c3e164ef096792057.js', statusCode: 200, isLookalike: true }
+    ],
+    flowTimeline: [],
+    iocMetadata: {
+      lookalikeDomains: ['cloud.screenconnect.com.vu'],
+      suspiciousSNIs: ['cloud.screenconnect.com.vu'],
+      redirectChains: [],
+      loginPOSTs: [],
+      iocMatches: [
+        { severity: 'critical', value: 'cloud.screenconnect.com.vu', type: 'Combo-Squat SNI' },
+        { severity: 'critical', value: 'SIGMA-NET-001', type: 'Sigma: SIGMA-NET-001' }
+      ]
     }
   };
 }
-```eof
