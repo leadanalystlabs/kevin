@@ -174,6 +174,155 @@ function evaluateCloudStorageAbuse(domain) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// PYRAMID OF PAIN — EXTERNAL CORROBORATION LAYER
+// ---------------------------------------------------------------------------
+// Kevin's own packet-level heuristics (combo-squat / masquerading detection,
+// credential-and-financial lure paths, relay-tool artifacts, cloud-storage
+// staging abuse, multi-stage chain correlation) sit at the TTP / Tools /
+// Network-Artifact tiers of the Pyramid of Pain and always run FIRST and
+// drive the primary score. Threat-intel APIs (Triage, URLhaus, Hybrid
+// Analysis) sit at the bottom of the pyramid (domain / hash / IP reputation)
+// and are used ONLY to corroborate a small set of behaviorally interesting
+// candidates Kevin has already flagged on its own — never as the sole basis
+// for a verdict, and never queried for every domain in a capture.
+
+const MAX_ENRICHMENT_CANDIDATES = 5;
+
+// What we'd expect a sandbox/reputation hit to *say* if it's actually
+// confirming the specific behavior Kevin suspects. A hit that matches the
+// expected category is "strong" corroboration; any other malicious verdict
+// is "moderate"; nothing found is no corroboration at all.
+const TTP_CORROBORATION_TAGS = {
+  'masquerading-idp': ['phish', 'phishing', 'credential', 'o365', 'okta', 'aitm', 'evilginx', 'adversary-in-the-middle'],
+  'masquerading-rmm': ['rat', 'remote', 'remoteaccess', 'screenconnect', 'anydesk', 'teamviewer', 'connectwise', 'rmm', 'kaseya'],
+  'staging-infra': ['loader', 'dropper', 'downloader', 'stager', 'malware', 'phish'],
+  'unclassified': []
+};
+
+async function queryTriage(domain, apiKey) {
+  try {
+    const q = encodeURIComponent(`domain:${domain}`);
+    const res = await fetch(`https://api.tria.ge/v0/search?query=${q}&subset=public&limit=3`, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.data || data.data.length === 0) return null;
+
+    const sample = data.data[0];
+    let score = 6, family = 'Unclassified', tags = ['public-detonation'];
+
+    const overviewRes = await fetch(`https://api.tria.ge/v0/samples/${sample.id}/overview.json`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    if (overviewRes.ok) {
+      const overview = await overviewRes.json();
+      score = overview.analysis?.score ?? score;
+      family = overview.analysis?.family || family;
+      tags = overview.analysis?.tags && overview.analysis.tags.length ? overview.analysis.tags : tags;
+    }
+
+    if (score < 5) return null;
+    return {
+      source: 'Triage',
+      sampleId: sample.id,
+      family,
+      tags: tags.map(t => String(t).toLowerCase())
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function queryUrlhaus(domain, apiKey) {
+  try {
+    const body = new URLSearchParams({ host: domain });
+    const res = await fetch('https://urlhaus-api.abuse.ch/v1/host/', {
+      method: 'POST',
+      headers: { 'Auth-Key': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.query_status !== 'ok') return null;
+    const tags = (data.urls || []).flatMap(u => (u.tags || []).map(t => String(t).toLowerCase()));
+    return {
+      source: 'URLhaus',
+      family: tags[0] || 'Unclassified',
+      urlCount: data.url_count || 0,
+      tags: tags.length ? tags : ['malware-distribution']
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function queryHybridAnalysis(domain, apiKey) {
+  try {
+    const body = new URLSearchParams({ domain });
+    const res = await fetch('https://www.hybrid-analysis.com/api/v2/search/terms', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'user-agent': 'Falcon Sandbox',
+        accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.result || data.result.length === 0) return null;
+    const top = data.result.reduce((a, b) => ((b.threat_score || 0) > (a.threat_score || 0) ? b : a), data.result[0]);
+    const isMalicious = top.verdict === 'malicious' || top.verdict === 'suspicious' || (top.threat_score || 0) >= 60;
+    if (!isMalicious) return null;
+    return {
+      source: 'Hybrid Analysis',
+      family: top.vx_family || 'Unclassified',
+      jobId: top.job_id || top.environment_id || 'n/a',
+      tags: [String(top.vx_family || top.verdict || 'malicious').toLowerCase()]
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Runs whichever intel sources are configured against ONE candidate domain
+// and folds the results into a single corroboration verdict. `suspectedTTP`
+// tells us what we're trying to confirm, so a hit is graded against what
+// Kevin already believes about this host, not treated as a verdict on its own.
+async function enrichCandidate(candidate, env) {
+  const jobs = [];
+  if (env && env.TRIAGE_API_KEY) jobs.push(queryTriage(candidate.domain, env.TRIAGE_API_KEY));
+  if (env && env.ABUSE_CH_API_KEY) jobs.push(queryUrlhaus(candidate.domain, env.ABUSE_CH_API_KEY));
+  if (env && env.HYBRID_ANALYSIS_API_KEY) jobs.push(queryHybridAnalysis(candidate.domain, env.HYBRID_ANALYSIS_API_KEY));
+  if (jobs.length === 0) return null;
+
+  const results = (await Promise.all(jobs)).filter(Boolean);
+  if (results.length === 0) return null;
+
+  const expectedTags = TTP_CORROBORATION_TAGS[candidate.suspectedTTP] || [];
+  let strength = 'moderate';
+  const sources = [];
+  const families = new Set();
+
+  for (const r of results) {
+    sources.push(r.source);
+    if (r.family && r.family !== 'Unclassified') families.add(r.family);
+    const hitsExpected = expectedTags.length > 0 && r.tags.some(t => expectedTags.some(e => t.includes(e)));
+    if (hitsExpected) strength = 'strong';
+  }
+
+  return {
+    domain: candidate.domain,
+    suspectedTTP: candidate.suspectedTTP,
+    strength,
+    sources,
+    families: Array.from(families)
+  };
+}
+
 const LINKTYPE_ETHERNET = 1;
 const LINKTYPE_RAW = 101;
 const LINKTYPE_LINUX_SLL = 113;
@@ -367,7 +516,7 @@ function extractTlsSni(payload) {
   return null;
 }
 
-function parseAndAnalyzePCAP(bytes, filename) {
+async function parseAndAnalyzePCAP(bytes, filename, env) {
   const startTime = Date.now();
   const { linkType, frames, totalPackets, truncated } = extractPackets(bytes, startTime);
   let tcpCount = 0;
@@ -383,6 +532,14 @@ function parseAndAnalyzePCAP(bytes, filename) {
   const redirectChains = [];
   const loginPOSTs = [];
   let threatScore = 0;
+
+  // Tracks which TTPs/artifacts were observed per-host so we can detect
+  // *compound* behavior chains (e.g. masquerading + credential lure on the
+  // same host) rather than scoring isolated signals independently. This is
+  // the generalized, domain-agnostic version of "brand-squat domain that
+  // also serves a billing-lure path that also serves a relay script" —
+  // it fires for any host that exhibits the pattern, not one hardcoded name.
+  const hostSignals = new Map();
 
   let verifiedEmptySniCount = 0;
   let completedTlsHandshakes = 0;
@@ -471,7 +628,11 @@ function parseAndAnalyzePCAP(bytes, filename) {
                   alpn: 'h2',
                   isSuspicious: !!squat
                 });
-                if (squat) suspiciousSNIs.push(sni);
+                if (squat) {
+                  suspiciousSNIs.push(sni);
+                  if (!hostSignals.has(sni)) hostSignals.set(sni, new Set());
+                  hostSignals.get(sni).add('masquerading');
+                }
               } else {
                 verifiedEmptySniCount++;
               }
@@ -490,8 +651,12 @@ function parseAndAnalyzePCAP(bytes, filename) {
             const hostMatch = sampleText.match(/^Host:\s*([^\r\n]+)/im);
             const host = hostMatch ? hostMatch[1].trim().toLowerCase() : dstIP;
 
-            const isLogin = /(?:\/|\b)(?:login|signin|auth|token|UpdateAccountBillinginformation)(?:\/|\b|\?)/i.test(path);
+            // Generic credential/financial lure keyword class (T1566/T1656) —
+            // deliberately broad rather than matching one literal path string,
+            // so it generalizes across campaigns instead of one observed URI.
+            const isLogin = /(?:^|\/|\?|&)(?:login|sign-?in|auth|oauth|token|sso|mfa|verify|password|session|account|billing|invoice|payment|wire[-_]?transfer)(?:\/|\?|&|$)/i.test(path);
             const hasIdpCookie = /(?:ESTSAUTH|MSISAuth|session_admin_auth)/i.test(sampleText);
+            const hostSquat = evaluateComboSquat(host);
 
             httpFlows.push({
               method,
@@ -501,33 +666,53 @@ function parseAndAnalyzePCAP(bytes, filename) {
               isLogin,
               hasSetCookie: method === 'POST',
               hasIdpCookie,
-              proxyTarget: path.includes('UpdateAccountBilling') ? 'ConnectWise' : null
+              proxyTarget: hostSquat ? hostSquat.brand : null
             });
 
-            if (method === 'POST') loginPOSTs.push(`POST ${host}${path}`);
+            if (method === 'POST' && isLogin) loginPOSTs.push(`POST ${host}${path}`);
 
+            if (!hostSignals.has(host)) hostSignals.set(host, new Set());
+
+            // Reverse-proxy / relay-tool artifact (e.g. Evilginx-style random
+            // hex script loaders). This is a mid-tier "Tools" artifact on its
+            // own — real, but not automatically critical unless it co-occurs
+            // with masquerading or a credential/financial lure on the same host.
             if (/\/s\/[a-f0-9]{32,64}(?:\.js|\.png|\.css)?/i.test(path)) {
-              threatScore += 50;
+              hostSignals.get(host).add('relay-artifact');
+              threatScore += 25;
               findings.push({
-                title: '[Sigma] Evilginx2 Credential Harvester URI Pattern',
-                description: `Request '${method} ${host}${path}' matched 'SIGMA-NET-001'. Dynamic script loader observed.`,
-                severity: 'critical',
-                evidence: [{ field: 'URI Path', value: path, context: 'Evilginx Lure Script' }],
-                mitigation: 'Block domain immediately on perimeter firewalls. Invalidate session tokens.'
+                title: 'Reverse-Proxy Relay Path Artifact (AiTM Tooling Signature)',
+                description: `Request '${method} ${host}${path}' matches the randomized asset-loader pattern used by AiTM reverse-proxy phishing kits (e.g. Evilginx-style toolkits).`,
+                severity: 'high',
+                evidence: [{ field: 'URI Path', value: path, context: 'Reverse-Proxy Relay Artifact' }],
+                mitigation: 'Investigate the destination host further; corroborate with sandbox/reputation lookups before blocking on this pattern alone.'
               });
-              iocMatches.push({ severity: 'critical', value: `${host}${path}`, type: 'Evilginx Lure Script' });
             }
 
-            if (path.includes('UpdateAccountBillinginformation')) {
-              threatScore += 45;
-              findings.push({
-                title: 'Administrative Phishing Gate Path Identified',
-                description: `Target host '${host}' requested credential lure URI '${path}'.`,
-                severity: 'critical',
-                evidence: [{ field: 'URI Path', value: path, context: 'AiTM Phishing Gate' }],
-                mitigation: 'Revoke administrator credentials and session cookies.'
-              });
-              iocMatches.push({ severity: 'critical', value: `${host}${path}`, type: 'Phishing Gate' });
+            if (isLogin) {
+              hostSignals.get(host).add('credential-lure');
+              // A credential/financial-keyword path is only weighted heavily
+              // when the host is already suspect (masquerading or, later,
+              // threat-intel corroborated). On an unverified/unknown host,
+              // record it at low confidence rather than declaring a verdict.
+              if (hostSquat) {
+                threatScore += 20;
+                findings.push({
+                  title: `Credential/Financial Lure Path Requested on Impersonated ${hostSquat.brand} Host`,
+                  description: `Host '${host}' (flagged as a likely ${hostSquat.brand} impersonation) received a credential- or billing-pattern request: '${path}'.`,
+                  severity: 'critical',
+                  evidence: [{ field: 'URI Path', value: path, context: 'AiTM Credential/Financial Lure' }],
+                  mitigation: 'Revoke any credentials or session cookies exchanged with this host and enforce phishing-resistant MFA.'
+                });
+              } else {
+                findings.push({
+                  title: 'Credential/Financial-Pattern Request to Unverified Host',
+                  description: `Host '${host}' received a request matching credential- or billing-related keywords: '${path}'. Host reputation is not yet established from packet data alone.`,
+                  severity: 'medium',
+                  evidence: [{ field: 'URI Path', value: path, context: 'Unverified Host' }],
+                  mitigation: 'Corroborate this host against sandbox/reputation intelligence before taking action.'
+                });
+              }
             }
           }
         }
@@ -537,9 +722,8 @@ function parseAndAnalyzePCAP(bytes, filename) {
 
   const domains = [];
   let foundCosAbuse = false;
-  let foundPhishLure = false;
-  let phishLureDomain = '';
-  let cosBucketDomain = '';
+  const enrichmentCandidates = [];
+  const unclassifiedCandidates = [];
 
   for (const [dom, info] of dnsDomainMap.entries()) {
     const squat = evaluateComboSquat(dom);
@@ -547,13 +731,15 @@ function parseAndAnalyzePCAP(bytes, filename) {
     const isLookalike = !!squat;
     const verified = isDomainBenign(dom);
 
+    if (!hostSignals.has(dom)) hostSignals.set(dom, new Set());
+
     if (cosAbuse) {
       foundCosAbuse = true;
-      cosBucketDomain = dom;
+      hostSignals.get(dom).add('staging-infra');
       threatScore += cosAbuse.riskScore;
       findings.push({
         title: 'Cloud Object Storage (COS) Phishing Staging Abuse',
-        description: `Observed query for '${dom}' on ${cosAbuse.provider}. Attackers (Storm-1167 / CodeStorm) abuse cloud storage buckets with randomized prefixes to host second-stage phishing scripts.`,
+        description: `Observed query for '${dom}' on ${cosAbuse.provider}. Randomized-prefix buckets like this are a known pattern for staging second-stage phishing scripts on trusted cloud infrastructure.`,
         severity: 'critical',
         evidence: [
           { field: 'Storage Bucket', value: cosAbuse.bucket, context: 'Obfuscated Phish Script Staging' },
@@ -562,38 +748,39 @@ function parseAndAnalyzePCAP(bytes, filename) {
         mitigation: 'Block object storage endpoint at web proxy; inspect endpoints that downloaded scripts from this bucket.'
       });
       iocMatches.push({ severity: 'critical', value: dom, type: 'Cloud Bucket Abuse' });
-    }
-
-    if (!verified && !squat && !cosAbuse) {
-      if (dom.includes('prodesignscommunicate') || dom.includes('metaaitrading')) {
-        foundPhishLure = true;
-        phishLureDomain = dom;
-        threatScore += 40;
-        findings.push({
-          title: 'Suspicious Phishing Gateway / Origin Lure Domain',
-          description: `Observed DNS resolution for unverified domain '${dom}'. Correlated with known phishing campaign frontends.`,
-          severity: 'high',
-          evidence: [{ field: 'Domain', value: dom, context: 'Phishing Frontend Lure' }],
-          mitigation: 'Block domain across recursive DNS resolvers.'
-        });
-        iocMatches.push({ severity: 'high', value: dom, type: 'Phishing Gateway' });
-      }
+      enrichmentCandidates.push({ domain: dom, suspectedTTP: 'staging-infra', priority: 2 });
     }
 
     if (squat) {
       lookalikeDomains.push(dom);
+      hostSignals.get(dom).add('masquerading');
       threatScore += squat.riskScore;
       findings.push({
-        title: `[AITM-001] Combo-Squatted ${squat.brand} Domain Identified`,
-        description: `DNS query for '${dom}' impersonates ${squat.brand} infrastructure (${squat.canonical}).`,
+        title: `Masquerading: Combo-Squatted ${squat.brand} Domain (MITRE T1036.005)`,
+        description: `DNS query for '${dom}' impersonates ${squat.brand} infrastructure (${squat.canonical}) via keyword-plus-anomalous-TLD combo-squatting.`,
         severity: 'critical',
         evidence: [
           { field: 'Observed Host', value: dom, context: 'Spoofed Reverse Proxy' },
           { field: 'Impersonated Service', value: squat.brand, context: `${squat.category} Infrastructure` }
         ],
-        mitigation: 'Sinkhole domain in recursive DNS resolvers.'
+        mitigation: 'Sinkhole domain in recursive DNS resolvers and treat any credential activity toward it as compromised.'
       });
       iocMatches.push({ severity: 'critical', value: dom, type: 'Combo-Squat Domain' });
+      enrichmentCandidates.push({
+        domain: dom,
+        suspectedTTP: squat.category === 'RMM' ? 'masquerading-rmm' : 'masquerading-idp',
+        priority: 1
+      });
+    }
+
+    // Anything left over — not a known-benign root, not a combo-squat, not a
+    // storage-abuse pattern — is genuinely unknown from packet data alone.
+    // Rather than pattern-matching literal domain names here (low value,
+    // Pyramid-of-Pain-wise, and doesn't generalize past one campaign), we
+    // queue it as a corroboration candidate and let Triage/URLhaus/Hybrid
+    // Analysis tell us whether it's actually worth a finding.
+    if (!verified && !squat && !cosAbuse && info.queries > 0) {
+      unclassifiedCandidates.push({ domain: dom, queries: info.queries });
     }
 
     let displayIps = [];
@@ -609,22 +796,115 @@ function parseAndAnalyzePCAP(bytes, filename) {
       domain: dom,
       ips: displayIps,
       queryCount: info.queries,
-      brand: squat ? squat.brand : (dom.includes('microsoft') || dom.includes('msedge') || dom.includes('office')) ? 'Microsoft 365' : null,
+      brand: squat ? squat.brand : null,
       isLookalike,
       verified,
       ttl: info.ttl ? `${info.ttl}s` : 'n/a'
     });
   }
 
-  // Attack chain correlation (CodeStorm Storm-1167)
-  const accessesM365AuthCdn = domains.some(d => d.domain === 'aadcdn.msauth.net' || d.domain === 'logincdn.msftauth.net');
-  if ((foundPhishLure || foundCosAbuse) && accessesM365AuthCdn) {
-    threatScore += 35;
-    const campaignEvidence = `${phishLureDomain || 'Gateway'} -> ${cosBucketDomain || 'Cloud Storage'} -> aadcdn.msauth.net (M365 Auth)`;
+  // Fill remaining enrichment budget with the highest-traffic unclassified
+  // domains. This replaces literal-string domain matching with a generic,
+  // data-driven path: Kevin doesn't know these are bad, so it asks.
+  unclassifiedCandidates
+    .sort((a, b) => b.queries - a.queries)
+    .forEach(c => enrichmentCandidates.push({ domain: c.domain, suspectedTTP: 'unclassified', priority: 3 }));
+
+  const candidatesToQuery = enrichmentCandidates
+    .sort((a, b) => a.priority - b.priority)
+    .slice(0, MAX_ENRICHMENT_CANDIDATES);
+
+  const corroboratedDomains = [];
+  if (candidatesToQuery.length > 0 && env) {
+    const enrichmentResults = await Promise.all(candidatesToQuery.map(c => enrichCandidate(c, env)));
+
+    enrichmentResults.forEach((result, idx) => {
+      if (!result) return;
+      const candidate = candidatesToQuery[idx];
+      corroboratedDomains.push(result.domain);
+      if (!hostSignals.has(result.domain)) hostSignals.set(result.domain, new Set());
+      hostSignals.get(result.domain).add('threat-intel-corroborated');
+
+      const familyLabel = result.families.length ? result.families.join(', ') : 'unattributed';
+      const sourceLabel = result.sources.join(' + ');
+
+      if (candidate.suspectedTTP === 'unclassified') {
+        // No internal behavioral signal fired for this host — the finding
+        // exists ONLY because external intel corroborated it, so weight and
+        // severity are capped below what a genuine TTP-based finding earns.
+        const weight = result.strength === 'strong' ? 30 : 15;
+        threatScore += weight;
+        findings.push({
+          title: `Threat-Intel Corroborated Infrastructure (${familyLabel})`,
+          description: `'${candidate.domain}' showed no packet-level behavioral signature on its own, but ${sourceLabel} independently associates it with ${familyLabel !== 'unattributed' ? familyLabel + ' activity' : 'active malicious campaigns'}.`,
+          severity: result.strength === 'strong' ? 'high' : 'medium',
+          evidence: [{ field: 'Corroborating Source(s)', value: sourceLabel, context: familyLabel }],
+          mitigation: 'Block domain pending internal investigation; corroboration alone should not be the sole basis for irreversible action.'
+        });
+        iocMatches.push({ severity: result.strength === 'strong' ? 'high' : 'medium', value: candidate.domain, type: 'Threat-Intel Corroboration' });
+      } else {
+        // The host already triggered a behavioral finding (masquerading /
+        // staging abuse) — corroboration here raises confidence rather than
+        // creating the finding, so the score bump is smaller.
+        const weight = result.strength === 'strong' ? 15 : 8;
+        threatScore += weight;
+        findings.push({
+          title: `Corroboration: ${familyLabel !== 'unattributed' ? familyLabel : 'Malicious Activity'} Confirmed for ${candidate.domain}`,
+          description: `Independent of Kevin's own packet-level detection, ${sourceLabel} corroborates suspicious activity on '${candidate.domain}' (${familyLabel !== 'unattributed' ? familyLabel : 'unattributed'}).`,
+          severity: 'critical',
+          evidence: [{ field: 'Corroborating Source(s)', value: sourceLabel, context: familyLabel }],
+          mitigation: 'Treat as confirmed; proceed with blocking and credential/session revocation.'
+        });
+        iocMatches.push({ severity: 'critical', value: candidate.domain, type: 'Threat-Intel Corroboration' });
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // COMPOUND TTP CHAIN DETECTION
+  // ---------------------------------------------------------------------
+  // The strongest signal isn't any single artifact — it's the SAME HOST
+  // exhibiting multiple independent techniques at once (masquerading +
+  // credential lure + relay tooling, or corroborated infra reached via a
+  // benign-looking redirector). This generalizes what used to be one
+  // hardcoded campaign ("ScreenConnect lookalike + billing path + relay
+  // script") into a rule that fires for any host, any campaign.
+  for (const [host, tags] of hostSignals.entries()) {
+    const hasIdentitySignal = tags.has('masquerading') || tags.has('threat-intel-corroborated') || tags.has('staging-infra');
+    const hasBehaviorSignal = tags.has('credential-lure') || tags.has('relay-artifact');
+    if (hasIdentitySignal && hasBehaviorSignal) {
+      const tagList = Array.from(tags).join(', ');
+      threatScore += 30;
+      redirectChains.push(`${host} exhibited combined TTPs: ${tagList}`);
+      findings.push({
+        title: `Compound AiTM Behavior Chain Confirmed on ${host}`,
+        description: `Host '${host}' independently triggered multiple techniques (${tagList}) — a far stronger signal than any single artifact alone.`,
+        severity: 'critical',
+        evidence: [{ field: 'Combined TTPs', value: tagList, context: 'Multi-Technique Correlation' }],
+        mitigation: 'Treat with highest confidence: block host, revoke sessions, and investigate any endpoint that communicated with it.'
+      });
+      iocMatches.push({ severity: 'critical', value: host, type: 'Compound TTP Chain' });
+    }
+  }
+
+  // Multi-stage chain: an untrusted/suspect origin (squat, staging bucket, or
+  // corroborated-malicious) that co-occurs with contact to ANY monitored
+  // identity provider's legitimate auth infrastructure — generalized across
+  // all configured IdPs rather than one hardcoded Microsoft hostname list.
+  const idpLegitSuffixes = Object.values(MONITORED_BRANDS)
+    .filter(b => b.category === 'IdP')
+    .flatMap(b => b.legitSuffixes);
+  const accessesIdpAuthCdn = domains.some(d => idpLegitSuffixes.some(s => d.domain === s || d.domain.endsWith(`.${s}`)));
+  const hasUntrustedOrigin = lookalikeDomains.length > 0 || foundCosAbuse || corroboratedDomains.length > 0;
+
+  if (hasUntrustedOrigin && accessesIdpAuthCdn) {
+    const originDomain = lookalikeDomains[0] || corroboratedDomains[0] || 'suspect origin';
+    threatScore += 25;
+    const campaignEvidence = `${originDomain} co-occurs with live identity-provider authentication traffic in the same capture`;
     redirectChains.push(campaignEvidence);
     findings.push({
-      title: 'CodeStorm / Storm-1167 AiTM Tenant Replay Campaign Detected',
-      description: 'Correlated multi-stage phishing flow: external lure gateway chained directly to cloud-hosted script loader and live Microsoft Entra ID authentication asset endpoints (aadcdn.msauth.net).',
+      title: 'Multi-Stage AiTM Session Replay Pattern Detected',
+      description: 'Correlated a suspect/impersonated origin with traffic to legitimate identity-provider authentication infrastructure in the same capture — consistent with a reverse-proxy AiTM session-token relay.',
       severity: 'critical',
       evidence: [{ field: 'Attack Chain', value: campaignEvidence, context: 'Multi-Stage AiTM Infrastructure' }],
       mitigation: 'Enforce FIDO2/WebAuthn phishing-resistant hardware keys across all enterprise identities to neutralize session replay.'
@@ -727,7 +1007,11 @@ export default {
         }
 
         const arrayBuffer = await file.arrayBuffer();
-        const analysis = parseAndAnalyzePCAP(new Uint8Array(arrayBuffer), file.name || 'capture.pcap');
+        // Note: the CPU_TIME_LIMIT_MS budget only bounds the byte-parsing
+        // loop above. These enrichment calls happen after that loop and are
+        // I/O-bound (waiting on Triage/URLhaus/Hybrid Analysis), which does
+        // not consume Worker CPU time the same way the parsing loop does.
+        const analysis = await parseAndAnalyzePCAP(new Uint8Array(arrayBuffer), file.name || 'capture.pcap', env);
 
         return new Response(JSON.stringify({ success: true, result: analysis }), {
           headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
