@@ -78,41 +78,22 @@ export default {
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const formData = await request.formData();
-        
-        // --- TURNSTILE VALIDATION ---
-        // Ensure Turnstile secret is configured in Cloudflare Dashboard
-        if (env.TURNSTILE_SECRET_KEY) {
-          const token = formData.get('cf-turnstile-response');
-          const ip = request.headers.get('CF-Connecting-IP');
-          
-          const formDataVerify = new FormData();
-          formDataVerify.append('secret', env.TURNSTILE_SECRET_KEY);
-          formDataVerify.append('response', token);
-          formDataVerify.append('remoteip', ip);
-
-          const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-              body: formDataVerify,
-              method: 'POST',
-          });
-
-          const outcome = await result.json();
-          if (!outcome.success) {
-              return new Response(JSON.stringify({ success: false, error: 'Turnstile verification failed. Are you a bot?' }), {
-                  status: 403,
-                  headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS }
-              });
-          }
-        }
 
         // --- FILE VALIDATION ---
         const file = formData.get('pcap');
         if (!file || typeof file === 'string') {
-          return new Response(JSON.stringify({ success: false, error: 'No PCAP file provided.' }), { status: 400, headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS } });
+          return new Response(JSON.stringify({ success: false, error: 'No PCAP file provided.' }), { 
+            status: 400, 
+            headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS } 
+          });
         }
 
         const fileName = file.name.toLowerCase();
         if (!fileName.endsWith('.pcap') && !fileName.endsWith('.pcapng') && !fileName.endsWith('.cap')) {
-          return new Response(JSON.stringify({ success: false, error: 'Invalid file extension. Supports .pcap and .pcapng.' }), { status: 400, headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS } });
+          return new Response(JSON.stringify({ success: false, error: 'Invalid file extension. Supports .pcap, .pcapng, and .cap.' }), { 
+            status: 400, 
+            headers: { 'Content-Type': 'application/json', ...SECURITY_HEADERS } 
+          });
         }
 
         // Hard Limit: 10MB ceiling to prevent Cloudflare Free Tier memory exhaustion
@@ -166,7 +147,7 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const chunkSize = 256 * 1024; // 256KB chunks (much faster to Regex than 2MB)
   
-  // Only process up to 2MB max, but evaluate in 256KB chunks
+  // Only process up to 2MB max, evaluated in 256KB chunks
   const totalChunks = Math.min(bytes.length, 2 * 1024 * 1024); 
 
   for (let i = 0; i < totalChunks; i += chunkSize) {
@@ -188,7 +169,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     // 3. Fast Flat-Signature Evaluation
     for (const rule of THREAT_SIGNATURES) {
         if (rule.match(chunkText)) {
-            // Ensure we don't trigger the same rule twice
             const alreadyFound = findings.some(f => f.title.includes(rule.title));
             if (!alreadyFound) {
                 threatScore += rule.score;
@@ -207,7 +187,6 @@ async function parseAndAnalyzePCAP(bytes, filename, env) {
     const httpMethodRegex = /(GET|POST)\s+([^\s]+)\s+HTTP\/1\.[01]/g;
     let httpMatch;
     while ((httpMatch = httpMethodRegex.exec(chunkText)) !== null) {
-        // Double check time-box inside the while loop just in case
         if ((Date.now() - CPU_START_TIME) >= CPU_TIME_LIMIT_MS) {
             isTruncated = true;
             break; 
